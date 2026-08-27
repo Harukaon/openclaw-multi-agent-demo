@@ -350,6 +350,7 @@ test("Platform broadcasts live context with loop and group isolation guards", as
     assert.match(String(firstForA.contentForAgent), /Mention State: DIRECT/);
     assert.match(String(firstForB.contentForAgent), /Mention State: OTHER/);
     assert.match(String(firstForB.contentForAgent), /Visible Agent replies so far: 0\/12/);
+    assert.match(String(firstForB.contentForAgent), /当前对话已经被 Agent 连续主动触发 0 次/);
     assert.match(String(firstForB.contentForAgent), /Earlier human turn: Agent A already answered pong/);
     agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: firstForA.seq, messageId: firstForA.messageId }));
     agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: firstForB.seq, messageId: firstForB.messageId }));
@@ -370,6 +371,7 @@ test("Platform broadcasts live context with loop and group isolation guards", as
     assert.equal((fromAForB.sender as Record<string, unknown>).id, "agent-a");
     assert.match(String(fromAForB.contentForAgent), /@agent-a Please analyze this/);
     assert.match(String(fromAForB.contentForAgent), /Agent A reply/);
+    assert.match(String(fromAForB.contentForAgent), /当前对话已经被 Agent 连续主动触发 1 次/);
 
     agentB.socket.send(JSON.stringify({
       type: "agent.message",
@@ -386,6 +388,7 @@ test("Platform broadcasts live context with loop and group isolation guards", as
     assert.match(String(fromBForA.contentForAgent), /@agent-a Please analyze this/);
     assert.match(String(fromBForA.contentForAgent), /Agent A reply/);
     assert.match(String(fromBForA.contentForAgent), /Visible Agent replies so far: 2\/12/);
+    assert.match(String(fromBForA.contentForAgent), /当前对话已经被 Agent 连续主动触发 1 次/);
     agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: fromAForB.seq, messageId: fromAForB.messageId }));
     agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: fromBForA.seq, messageId: fromBForA.messageId }));
 
