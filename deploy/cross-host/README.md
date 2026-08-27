@@ -4,8 +4,8 @@
 
 ```text
 Cloudflare DNS
-   ├─ groupchat / web / agent-a -> F2 Caddy -> F2 Platform / web / Agent A
-   └─ agent-b / agent-c         -> F3 Caddy -> F3 Agent B / Agent C
+   ├─ groupchat / web / Atlas -> F2 Caddy -> F2 Platform / web / Atlas
+   └─ Nova / Orion            -> F3 Caddy -> F3 Nova / Orion
 ```
 
 ## DNS records
@@ -23,8 +23,8 @@ Cloudflare 代理开启橙云，SSL/TLS 模式使用 `Full (strict)`。两台 Ca
 ## 服务器目录
 
 - F2 Platform: `/home/ubuntu/feedmob-group-platform`
-- F2 Agent A: `/home/ubuntu/feedmob-group-f2`
-- F3 Agent B/C: `/home/ubuntu/feedmob-group-f3`
+- F2 Atlas: `/home/ubuntu/feedmob-group-f2`
+- F3 Nova/Orion: `/home/ubuntu/feedmob-group-f3`
 - F3 Caddy: `/home/ubuntu/feedmob-group-f3-caddy`
 - F2 Caddy snippet: `/etc/caddy/sites/feedmob-group-test.caddy`
 - F2 static web: `/var/www/feedmob-group-chat`

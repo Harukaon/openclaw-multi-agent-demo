@@ -1,6 +1,6 @@
 # 单机验收部署（feedmob2）
 
-此目录用于今晚的本地化验收：Group Platform、Agent A/B/C 都在同一台 `feedmob2`，加入同一 Compose 网络。Platform 不暴露公网，只映射到宿主机 `127.0.0.1:18788`；三个 Gateway 分别使用 `127.0.0.1:18790`、`:18791`、`:18792`。现有 `openclaw-cf` 的 `:18789` 不动。
+此目录用于本地化验收：Group Platform、Atlas/Nova/Orion 都在同一台 `feedmob2`，加入同一 Compose 网络。Platform 不暴露公网，只映射到宿主机 `127.0.0.1:18788`；三个 Gateway 分别使用 `127.0.0.1:18790`、`:18791`、`:18792`。现有 `openclaw-cf` 的 `:18789` 不动。
 
 ## 启动前
 
