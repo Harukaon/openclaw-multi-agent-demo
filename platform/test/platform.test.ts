@@ -91,7 +91,7 @@ test("Agent prompt injection preserves the message and explains each mention sta
 
   const none = buildAgentContentForAgent({ ...base, mentionState: "NONE" });
   assert.match(none, /Mention State: NONE/);
-  assert.match(none, /消息没有 @ 任何群成员/);
+  assert.match(none, /没有 @ 任何群成员/);
 
   const self = buildAgentContentForAgent({ ...base, mentionState: "SELF" });
   assert.match(self, /Mention State: SELF/);
@@ -357,43 +357,57 @@ test("Platform broadcasts live context with loop and group isolation guards", as
 
     agentA.socket.send(JSON.stringify({
       type: "agent.message",
-      clientMessageId: "reply-a",
+      clientMessageId: "reply-a-observation",
       groupId: "group-a",
-      content: "Agent A reply",
+      content: "Agent A says hello to B",
       parentMessageId: firstForA.messageId,
       rootMessageId: firstForA.rootMessageId,
       depth: 1,
     }));
-    const acceptedA = await agentA.waitFor((event) => event.type === "message.accepted" && event.clientMessageId === "reply-a");
-    assert.equal(acceptedA.groupId, "group-a");
-    const fromAForB = await agentB.waitFor((event) => event.type === "message" && event.content === "Agent A reply");
-    assert.equal(agentA.events.some((event) => event.type === "message" && event.content === "Agent A reply"), false);
-    assert.equal((fromAForB.sender as Record<string, unknown>).id, "agent-a");
-    assert.match(String(fromAForB.contentForAgent), /@agent-a Please analyze this/);
-    assert.match(String(fromAForB.contentForAgent), /Agent A reply/);
+    await agentA.waitFor((event) => event.type === "message.accepted" && event.clientMessageId === "reply-a-observation");
+    const observationForB = await agentB.waitFor((event) => event.type === "message" && event.content === "Agent A says hello to B");
+    assert.equal((observationForB.deliveryContext as Record<string, unknown>).observation, true);
+    assert.match(String(observationForB.contentForAgent), /Agent A says hello to B/);
+    assert.match(String(observationForB.contentForAgent), /当前对话已经被 Agent 连续主动触发 1 次/);
+    agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: observationForB.seq, messageId: observationForB.messageId }));
+
+    agentA.socket.send(JSON.stringify({
+      type: "agent.message",
+      clientMessageId: "reply-a-direct",
+      groupId: "group-a",
+      content: "@agent-b Agent A asks B",
+      parentMessageId: firstForA.messageId,
+      rootMessageId: firstForA.rootMessageId,
+      depth: 1,
+    }));
+    await agentA.waitFor((event) => event.type === "message.accepted" && event.clientMessageId === "reply-a-direct");
+    const fromAForB = await agentB.waitFor((event) => event.type === "message" && event.content === "@agent-b Agent A asks B");
+    assert.equal((fromAForB.deliveryContext as Record<string, unknown>).observation, undefined);
+    assert.equal((fromAForB.deliveryContext as Record<string, unknown>).mentionState, "DIRECT");
+    assert.match(String(fromAForB.contentForAgent), /Agent A asks B/);
     assert.match(String(fromAForB.contentForAgent), /当前对话已经被 Agent 连续主动触发 1 次/);
+    agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: fromAForB.seq, messageId: fromAForB.messageId }));
 
     agentB.socket.send(JSON.stringify({
       type: "agent.message",
       clientMessageId: "reply-b",
       groupId: "group-a",
-      content: "Agent B reply",
-      parentMessageId: firstForB.messageId,
-      rootMessageId: firstForB.rootMessageId,
-      depth: 1,
+      content: "@agent-a Agent B reply",
+      parentMessageId: fromAForB.messageId,
+      rootMessageId: fromAForB.rootMessageId,
+      depth: 2,
     }));
     await agentB.waitFor((event) => event.type === "message.accepted" && event.clientMessageId === "reply-b");
-    const fromBForA = await agentA.waitFor((event) => event.type === "message" && event.content === "Agent B reply");
+    const fromBForA = await agentA.waitFor((event) => event.type === "message" && event.content === "@agent-a Agent B reply");
     assert.equal((fromBForA.sender as Record<string, unknown>).id, "agent-b");
-    assert.match(String(fromBForA.contentForAgent), /@agent-a Please analyze this/);
-    assert.match(String(fromBForA.contentForAgent), /Agent A reply/);
-    assert.match(String(fromBForA.contentForAgent), /Visible Agent replies so far: 2\/12/);
-    assert.match(String(fromBForA.contentForAgent), /当前对话已经被 Agent 连续主动触发 1 次/);
-    agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: fromAForB.seq, messageId: fromAForB.messageId }));
+    assert.equal((fromBForA.deliveryContext as Record<string, unknown>).mentionState, "DIRECT");
+    assert.match(String(fromBForA.contentForAgent), /@agent-b Agent A asks B/);
+    assert.match(String(fromBForA.contentForAgent), /Visible Agent replies so far: 3\/12/);
+    assert.match(String(fromBForA.contentForAgent), /当前对话已经被 Agent 连续主动触发 2 次/);
     agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: fromBForA.seq, messageId: fromBForA.messageId }));
 
     const completed = await user.waitFor((event) => event.type === "broadcast.status" && event.state === "completed", 7000);
-    assert.equal(completed.agentReplyCount, 2);
+    assert.equal(completed.agentReplyCount, 3);
     assert.deepEqual((completed.agents as Array<Record<string, unknown>>).map((agent) => agent.status).sort(), ["replied", "replied"]);
 
     await postJson(`http://127.0.0.1:${port}/api/groups/group-b/messages`, {

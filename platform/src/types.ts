@@ -99,6 +99,7 @@ export interface DeliveryContext {
   mentionState: MentionState;
   selfMessage: boolean;
   broadcast?: AgentBroadcastContext;
+  observation?: boolean;
 }
 
 export interface AgentMessageEvent {
