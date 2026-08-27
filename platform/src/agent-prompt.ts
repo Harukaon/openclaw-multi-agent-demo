@@ -16,7 +16,7 @@ function decisionInstruction(mentionState: MentionState): string {
     case "SELF":
       return "这条消息由你自己发出。请保持静默，不要回复，避免自我回环。";
     case "DIRECT":
-      return "消息直接 @ 了你。原则上请回复，并优先处理与您职责相关的内容。";
+      return "消息直接 @ 了你（包括 @all）。这是明确的回复请求；请回复一次并保持简洁，不要继续制造后续回合。";
     case "OTHER":
       return "本消息没有 @ 你，只指向其他群成员或 Agent。默认保持静默；只有完整历史明确表明你能提供不可替代的关键信息时才回复，否则输出 NO_REPLY。";
     case "NONE":

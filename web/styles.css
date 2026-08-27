@@ -125,6 +125,7 @@ button:disabled, input:disabled, select:disabled { opacity: .45; cursor: not-all
 .mention-bar { display: flex; flex-wrap: wrap; gap: 6px; min-height: 0; margin-bottom: 7px; }
 .mention-chip { border: 1px solid #2e4e7d; border-radius: 999px; color: #a9cdfb; background: #122645; padding: 4px 9px; font-size: 11px; cursor: pointer; }
 .mention-chip:hover { border-color: #72b8ff; color: #fff; }
+.mention-chip.mention-all { border-style: dashed; color: #cbb8ef; background: #211c36; }
 .composer-row { display: flex; gap: 10px; }
 .composer input { flex: 1; }
 .composer button span { opacity: .65; font-size: 12px; }

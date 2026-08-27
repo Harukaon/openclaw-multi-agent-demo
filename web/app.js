@@ -371,6 +371,18 @@ function renderMembers() {
     row.append(avatar, text);
     membersEl.append(row);
   }
+  if (agents.length) {
+    const allChip = document.createElement("button");
+    allChip.type = "button";
+    allChip.className = "mention-chip mention-all";
+    allChip.textContent = "@all";
+    allChip.title = "提及群内全部成员";
+    allChip.addEventListener("click", () => {
+      contentInput.value = `${contentInput.value}${contentInput.value ? " " : ""}@all `;
+      contentInput.focus();
+    });
+    mentionBar.append(allChip);
+  }
   for (const agent of agents) {
     const chip = document.createElement("button");
     chip.type = "button";

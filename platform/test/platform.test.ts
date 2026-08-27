@@ -4,6 +4,7 @@ import { WebSocket } from "ws";
 import { Store } from "../src/store.js";
 import { PlatformServer } from "../src/server.js";
 import { buildAgentContentForAgent } from "../src/agent-prompt.js";
+import { mentionStateFor } from "../src/mention.js";
 
 test("group-scoped sequence and mention parsing stay isolated", () => {
   const store = new Store();
@@ -38,6 +39,16 @@ test("group-scoped sequence and mention parsing stay isolated", () => {
     assert.equal(store.latestSeq(groupB.id), 1);
     assert.deepEqual(store.listGroupsForAgent(agentA.agent.id).map((item) => item.id), ["group-a", "group-b"]);
     assert.deepEqual(store.listGroupsForAgent(agentB.agent.id).map((item) => item.id), ["group-a"]);
+
+    const all = store.appendMessage({
+      groupId: groupA.id,
+      sender: { type: "human", id: ownerA.id, name: ownerA.displayName },
+      content: "@all reply once",
+    });
+    assert.deepEqual(all.mentions.filter((item) => item.type === "agent").map((item) => item.id), ["agent-a", "agent-b"]);
+    assert.equal(all.mentions.some((item) => item.type === "human" && item.id === ownerA.id), true);
+    assert.equal(mentionStateFor("human", ownerA.id, agentA.agent.id, all.mentions), "DIRECT");
+    assert.equal(mentionStateFor("human", ownerA.id, agentB.agent.id, all.mentions), "DIRECT");
   } finally {
     store.close();
   }

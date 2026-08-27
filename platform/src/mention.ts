@@ -27,16 +27,19 @@ export function parseMentions(content: string, members: GroupMember[]): Mention[
   const seen = new Set<string>();
   for (const match of content.matchAll(/@([A-Za-z0-9][A-Za-z0-9_.-]{0,63})/g)) {
     const token = normalizeToken(match[1] ?? "");
-    const member = aliases.get(token);
-    if (!member) continue;
-    const key = `${member.memberType}:${member.memberId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push({
-      type: member.memberType,
-      id: member.memberId,
-      displayName: member.displayName,
-    });
+    const matchedMembers = token === "all"
+      ? members
+      : (aliases.has(token) ? [aliases.get(token)!] : []);
+    for (const member of matchedMembers) {
+      const key = `${member.memberType}:${member.memberId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        type: member.memberType,
+        id: member.memberId,
+        displayName: member.displayName,
+      });
+    }
   }
   return result;
 }
