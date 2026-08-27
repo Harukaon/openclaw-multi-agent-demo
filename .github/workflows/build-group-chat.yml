@@ -31,7 +31,7 @@ jobs:
           file: ./platform/Dockerfile
           push: true
           platforms: linux/amd64
-          tags: ghcr.io/${{ github.repository_owner }}/feedmob-openclaw-group-platform:latest
+          tags: ghcr.io/harukaon/feedmob-openclaw-group-platform:latest
 
   openclaw:
     runs-on: ubuntu-latest
@@ -49,4 +49,4 @@ jobs:
           file: ./plugins/feedmob-group-chat/Dockerfile
           push: true
           platforms: linux/amd64
-          tags: ghcr.io/${{ github.repository_owner }}/feedmob-openclaw-group-chat:latest
+          tags: ghcr.io/harukaon/feedmob-openclaw-group-chat:latest
