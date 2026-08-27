@@ -8,6 +8,10 @@ services:
     mem_reservation: 256m
     env_file:
       - .env
+    environment:
+      BROADCAST_MAX_AGENT_REPLIES: ${BROADCAST_MAX_AGENT_REPLIES:-12}
+      BROADCAST_ACK_TIMEOUT_MS: ${BROADCAST_ACK_TIMEOUT_MS:-120000}
+      BROADCAST_SETTLE_MS: ${BROADCAST_SETTLE_MS:-2000}
     ports:
       - "${PLATFORM_BIND_IP:-172.31.26.99}:8787:8787"
     volumes:

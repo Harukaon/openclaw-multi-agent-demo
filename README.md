@@ -19,9 +19,11 @@ Compose 已为 Platform 配置 `384m` 上限/`256m` 保留，为每只 OpenClaw+
 
 ## 消息编排
 
-Platform 不修改 OpenClaw。一个群内的人类 turn 按 Agent 成员加入顺序串行投递：A 完成后，Platform 将用户原话和 A 的可见回复拼入 `contentForAgent`，再投递给 B。Agent 没有有效贡献时输出精确的 `NO_REPLY`（大小写不敏感、不得附加其他文字），插件将其静默；可见回复才会写入群历史并传给下一 Agent。
+Platform 不修改 OpenClaw。人类消息开启一个按 `rootMessageId` 隔离的受控广播回合：所有在线 Agent 并行收到带有群组上下文的 `contentForAgent`，随后每个可见 Agent 回复都会实时广播给其他成员。Agent 没有有效贡献时必须输出精确的 `NO_REPLY`（大小写不敏感、不得附加其他文字），插件将其静默；Agent 不会收到自己的消息。
 
-Platform 同时向用户 WebSocket 推送 `pipeline.status`：状态栏显示当前由哪个 Agent 回复，以及每个 Agent 的 `等待中`、`回复中`、`已回复`、`已跳过`、`离线跳过` 或 `超时跳过` 状态；本轮所有成员处理完后显示 `已完成`。用户连接的 `hello.ok` 也会带上各群最新状态，刷新页面不会丢失当前状态。
+每个根消息默认最多允许 12 条可见 Agent 回复，可通过 `BROADCAST_MAX_AGENT_REPLIES` 配置；回合在所有投递 ACK 完成并经过短暂结算窗口后结束。重复投递通过 `(turnId, messageId, agentId)` 去重，每个 Agent 在同一群组使用串行投递队列，暂停、重置、断线和 replay 都不会重新启动旧回合。
+
+Platform 向用户 WebSocket 推送 `broadcast.status`：状态栏显示并发回复 Agent、每个 Agent 的决策状态和 `已回复/最大回复数` 预算。用户连接的 `hello.ok` 也会带上各群最新 `broadcastStatuses`，刷新页面不会丢失状态。
 
 ## 关键约束
 

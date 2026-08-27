@@ -57,11 +57,12 @@ type GroupMessageEvent = GroupChatClientMessage & {
     groupName: string;
     mentionState: "SELF" | "DIRECT" | "OTHER" | "NONE";
     selfMessage: boolean;
-    pipeline?: {
+    broadcast?: {
       turnId: string;
-      step: number;
-      totalSteps: number;
       rootMessageId: string;
+      depth: number;
+      agentReplyCount: number;
+      maxAgentReplies: number;
     };
   };
 };
@@ -129,12 +130,12 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
   const mentionState = isSelfMessage ? "SELF" : (delivery?.mentionState || "NONE");
   const contentForAgent = event.contentForAgent?.trim() || event.content;
 
-  // Platform owns the ordered fan-out. A message without pipeline metadata is
-  // only a replay/observation and must never start an OpenClaw turn.
-  const pipeline = delivery?.pipeline;
-  if (!pipeline) {
+  // Platform broadcasts live turns with metadata. A replay/observation has no
+  // broadcast context and must be ACKed without starting an OpenClaw turn.
+  const broadcast = delivery?.broadcast;
+  if (!broadcast) {
     client.send({ type: "ack", groupId: event.group.id, seq: event.seq, messageId: event.messageId });
-    ctx.log?.info?.(`observed non-pipeline message group=${event.group.id} seq=${event.seq}`);
+    ctx.log?.info?.(`observed replay group=${event.group.id} seq=${event.seq}`);
     return;
   }
 
@@ -242,6 +243,7 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
               rootMessageId: event.rootMessageId || event.messageId,
               depth: event.depth + 1,
             });
+            if (accepted.suppressed) return { visibleReplySent: false };
             return { content: text, messageIds: [accepted.messageId], visibleReplySent: true };
           },
           onError: (error: unknown) => ctx.log?.error?.(`${CHANNEL_ID}: delivery failed: ${String(error)}`),
@@ -253,9 +255,8 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
       }),
     },
   });
-  // ACK means this Platform pipeline step has finished. OpenClaw suppresses
-  // an exact NO_REPLY final response before delivery, so the Platform advances
-  // even when this Agent intentionally says nothing visible.
+  // ACK means this broadcast delivery has finished. OpenClaw suppresses an
+  // exact NO_REPLY final response before delivery, so silence is still ACKed.
   client.send({ type: "ack", groupId: event.group.id, seq: event.seq, messageId: event.messageId });
 }
 

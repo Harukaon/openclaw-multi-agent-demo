@@ -63,31 +63,32 @@ export interface StoredMessage {
   createdAt: string;
 }
 
-export interface AgentPipelineContext {
+export interface AgentBroadcastContext {
   turnId: string;
-  step: number;
-  totalSteps: number;
   rootMessageId: string;
+  depth: number;
+  agentReplyCount: number;
+  maxAgentReplies: number;
 }
 
-export type PipelineAgentStatus = "waiting" | "replying" | "replied" | "skipped" | "offline" | "timeout";
+export type BroadcastAgentStatus = "waiting" | "replying" | "replied" | "no_reply" | "offline" | "timeout" | "limit";
 
-export interface PipelineAgentStatusEntry {
+export interface BroadcastAgentStatusEntry {
   id: string;
   displayName: string;
-  status: PipelineAgentStatus;
+  status: BroadcastAgentStatus;
 }
 
-export interface PipelineStatusEvent {
-  type: "pipeline.status";
+export interface BroadcastStatusEvent {
+  type: "broadcast.status";
   group: Pick<Group, "id" | "name">;
   turnId: string;
   rootMessageId: string;
-  state: "queued" | "replying" | "completed";
-  step: number;
-  totalSteps: number;
-  currentAgent?: Pick<Agent, "id" | "displayName">;
-  agents: PipelineAgentStatusEntry[];
+  state: "broadcasting" | "completed";
+  activeAgents: Array<Pick<Agent, "id" | "displayName">>;
+  agentReplyCount: number;
+  maxAgentReplies: number;
+  agents: BroadcastAgentStatusEntry[];
   updatedAt: string;
 }
 
@@ -96,7 +97,7 @@ export interface DeliveryContext {
   groupName: string;
   mentionState: MentionState;
   selfMessage: boolean;
-  pipeline?: AgentPipelineContext;
+  broadcast?: AgentBroadcastContext;
 }
 
 export interface AgentMessageEvent {
@@ -154,6 +155,13 @@ export interface AgentMessageAccepted {
   groupId: string;
   messageId: string;
   seq: number;
+}
+
+export interface AgentMessageSuppressed {
+  type: "message.suppressed";
+  clientMessageId?: string;
+  groupId: string;
+  reason: "max_agent_replies" | "turn_completed";
 }
 
 export interface UserOutboundMessage {

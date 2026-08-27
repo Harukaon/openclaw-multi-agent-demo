@@ -8,6 +8,7 @@ export type GroupChatClientMessage = {
 type AcceptedMessage = {
   messageId: string;
   seq: number;
+  suppressed?: boolean;
 };
 
 export type GroupChatClientOptions = {
@@ -143,12 +144,14 @@ export class GroupChatClient {
           this.options.log?.("ignoring malformed group server message");
           return;
         }
-        if (message.type === "message.accepted" && typeof message.clientMessageId === "string") {
+        if ((message.type === "message.accepted" || message.type === "message.suppressed") && typeof message.clientMessageId === "string") {
           const pending = this.pendingMessages.get(message.clientMessageId);
           if (pending) {
             clearTimeout(pending.timer);
             this.pendingMessages.delete(message.clientMessageId);
-            if (typeof message.messageId === "string" && Number.isSafeInteger(Number(message.seq))) {
+            if (message.type === "message.suppressed") {
+              pending.resolve({ messageId: "", seq: 0, suppressed: true });
+            } else if (typeof message.messageId === "string" && Number.isSafeInteger(Number(message.seq))) {
               pending.resolve({ messageId: message.messageId, seq: Number(message.seq) });
             } else {
               pending.reject(new Error("Platform returned an invalid message acceptance"));

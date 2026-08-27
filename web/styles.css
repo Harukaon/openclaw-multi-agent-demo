@@ -53,28 +53,28 @@ select:focus, input:focus { border-color: #578fff; box-shadow: 0 0 0 3px #4f8cff
 .eyebrow { margin: 0 0 7px; color: #70baff; font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
 h1 { margin: 0; color: #f3f7ff; font-size: clamp(24px, 3vw, 34px); letter-spacing: -.04em; }
 .muted { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
-.pipeline-status { margin: 0 38px 10px; border: 1px solid #29446c; border-radius: 12px; background: #101f39cc; padding: 11px 13px 10px; }
-.pipeline-status.idle { border-color: #22334f; background: #0d1729aa; }
-.pipeline-status.completed { border-color: #276b5a; background: #102b2acc; }
-.pipeline-status-head { display: flex; align-items: center; gap: 8px; min-width: 0; color: #dce9ff; font-size: 12px; }
-.pipeline-status-head strong { font-size: 12px; }
-.pipeline-status-head > span:last-child { overflow: hidden; color: #8195b7; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
-.pipeline-status-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #71809c; }
-.pipeline-status.replying .pipeline-status-dot { background: #f4c76c; box-shadow: 0 0 0 4px #f4c76c18; }
-.pipeline-status.completed .pipeline-status-dot { background: #50d89b; box-shadow: 0 0 0 4px #50d89b18; }
-.pipeline-agents { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
-.pipeline-agent { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #2a3e60; border-radius: 999px; color: #8698b7; background: #0c172b; padding: 4px 8px; font-size: 10px; }
-.pipeline-agent b { color: #b9c9e3; font-size: 10px; }
-.pipeline-agent.replying { border-color: #92763b; color: #f4c76c; background: #3a2f18; }
-.pipeline-agent.replying b { color: #ffe3a0; }
-.pipeline-agent.replied { border-color: #276b5a; color: #72d9ad; background: #12352d; }
-.pipeline-agent.replied b { color: #b0f2d4; }
-.pipeline-agent.skipped, .pipeline-agent.offline, .pipeline-agent.timeout { border-color: #4a3544; color: #c397a8; background: #211925; }
-.pipeline-agent.skipped b, .pipeline-agent.offline b, .pipeline-agent.timeout b { color: #e0b4c4; }
+.broadcast-status { margin: 0 38px 10px; border: 1px solid #29446c; border-radius: 12px; background: #101f39cc; padding: 11px 13px 10px; }
+.broadcast-status.idle { border-color: #22334f; background: #0d1729aa; }
+.broadcast-status.completed { border-color: #276b5a; background: #102b2acc; }
+.broadcast-status-head { display: flex; align-items: center; gap: 8px; min-width: 0; color: #dce9ff; font-size: 12px; }
+.broadcast-status-head strong { font-size: 12px; }
+.broadcast-status-head > span:last-child { overflow: hidden; color: #8195b7; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.broadcast-status-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #71809c; }
+.broadcast-status.broadcasting .broadcast-status-dot { background: #f4c76c; box-shadow: 0 0 0 4px #f4c76c18; }
+.broadcast-status.completed .broadcast-status-dot { background: #50d89b; box-shadow: 0 0 0 4px #50d89b18; }
+.broadcast-agents { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.broadcast-agent { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #2a3e60; border-radius: 999px; color: #8698b7; background: #0c172b; padding: 4px 8px; font-size: 10px; }
+.broadcast-agent b { color: #b9c9e3; font-size: 10px; }
+.broadcast-agent.replying { border-color: #92763b; color: #f4c76c; background: #3a2f18; }
+.broadcast-agent.replying b { color: #ffe3a0; }
+.broadcast-agent.replied { border-color: #276b5a; color: #72d9ad; background: #12352d; }
+.broadcast-agent.replied b { color: #b0f2d4; }
+.broadcast-agent.no_reply, .broadcast-agent.limit, .broadcast-agent.no_reply, .broadcast-agent.limit, .broadcast-agent.offline, .broadcast-agent.timeout { border-color: #4a3544; color: #c397a8; background: #211925; }
+.broadcast-agent.no_reply b, .broadcast-agent.limit b, .broadcast-agent.offline b, .broadcast-agent.timeout b { color: #e0b4c4; }
 .group-name { flex: 1; min-width: 0; }
-.group-pipeline-badge { margin-left: auto; overflow: hidden; max-width: 64px; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
-.group-pipeline-badge.replying { color: #f4c76c; }
-.group-pipeline-badge.completed { color: #65d9a5; }
+.group-broadcast-badge { margin-left: auto; overflow: hidden; max-width: 64px; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.group-broadcast-badge.replying { color: #f4c76c; }
+.group-broadcast-badge.completed { color: #65d9a5; }
 .primary-button, .composer button { min-height: 41px; border: 1px solid #5b96ff; border-radius: 10px; color: #fff; background: #316bd9; padding: 0 17px; font-weight: 750; cursor: pointer; }
 .primary-button:hover:not(:disabled), .composer button:hover:not(:disabled) { background: #4783ed; }
 button:disabled, input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
@@ -107,4 +107,4 @@ button:disabled, input:disabled, select:disabled { opacity: .45; cursor: not-all
 .member-detail { display: block; margin-top: 2px; color: #71809c; font-size: 10px; }
 .member-detail.online { color: #65d9a5; }
 .panel-note { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 15px; color: #697994; font-size: 11px; line-height: 1.6; }
-@media (max-width: 800px) { .app-shell { grid-template-columns: 1fr; } .sidebar { display: none; } .mobile-brand { display: flex; } .topbar { height: 58px; padding: 0 18px; } .chat-layout { display: block; min-height: calc(100vh - 58px); } .chat-column { min-height: calc(100vh - 58px); } .members-panel { display: none; } .chat-header { padding: 25px 18px 15px; } .pipeline-status { margin: 0 18px 10px; } .messages { padding: 8px 18px 20px; } .composer { padding: 12px 18px 18px; } }
+@media (max-width: 800px) { .app-shell { grid-template-columns: 1fr; } .sidebar { display: none; } .mobile-brand { display: flex; } .topbar { height: 58px; padding: 0 18px; } .chat-layout { display: block; min-height: calc(100vh - 58px); } .chat-column { min-height: calc(100vh - 58px); } .members-panel { display: none; } .chat-header { padding: 25px 18px 15px; } .broadcast-status { margin: 0 18px 10px; } .messages { padding: 8px 18px 20px; } .composer { padding: 12px 18px 18px; } }

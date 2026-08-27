@@ -527,6 +527,24 @@ export class Store {
       .run(result, messageId, groupId, agentId);
   }
 
+  hasAgentReplyTo(messageId: string, groupId: string, agentId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS found FROM messages
+         WHERE id = ? AND group_id = ?
+         AND EXISTS (
+           SELECT 1 FROM messages AS reply
+           WHERE reply.group_id = messages.group_id
+             AND reply.sender_type = 'agent'
+             AND reply.sender_id = ?
+             AND reply.parent_message_id = messages.id
+         )
+         LIMIT 1`,
+      )
+      .get(messageId, groupId, agentId) as { found: number } | undefined;
+    return Boolean(row?.found);
+  }
+
   ack(input: { agentId: string; groupId: string; seq: number; messageId?: string }): void {
     const now = new Date().toISOString();
     this.transaction(() => {

@@ -228,7 +228,7 @@ function closeSocket(socket: WebSocket): Promise<void> {
   });
 }
 
-test("Platform passes cumulative context to Agents in group order", async () => {
+test("Platform broadcasts live context with loop and group isolation guards", async () => {
   const store = new Store();
   const server = new PlatformServer(store);
   let agentA: SocketHarness | undefined;
@@ -259,55 +259,53 @@ test("Platform passes cumulative context to Agents in group order", async () => 
       content: "@agent-a Please analyze this",
     });
     const firstForA = await agentA.waitFor((event) => event.type === "message" && event.content === "@agent-a Please analyze this");
-    const replyingA = await user.waitFor((event) => event.type === "pipeline.status" && (event.currentAgent as Record<string, unknown>)?.id === "agent-a");
-    assert.equal(replyingA.state, "replying");
-    assert.equal((replyingA.agents as Array<Record<string, unknown>>)[0]?.status, "replying");
-    assert.equal((firstForA.deliveryContext as Record<string, unknown>).pipeline && ((firstForA.deliveryContext as Record<string, unknown>).pipeline as Record<string, unknown>).step, 1);
+    const firstForB = await agentB.waitFor((event) => event.type === "message" && event.content === "@agent-a Please analyze this");
+    const broadcasting = await user.waitFor((event) => event.type === "broadcast.status" && event.state === "broadcasting");
+    assert.deepEqual((broadcasting.activeAgents as Array<Record<string, unknown>>).map((agent) => agent.id).sort(), ["agent-a", "agent-b"]);
+    assert.equal((firstForA.deliveryContext as Record<string, unknown>).broadcast !== undefined, true);
+    assert.equal((firstForB.deliveryContext as Record<string, unknown>).broadcast !== undefined, true);
     assert.match(String(firstForA.contentForAgent), /Mention State: DIRECT/);
-    assert.equal(agentB.events.some((event) => event.type === "message" && event.content === "@agent-a Please analyze this"), false);
+    assert.match(String(firstForB.contentForAgent), /Mention State: OTHER/);
+    assert.match(String(firstForB.contentForAgent), /Visible Agent replies so far: 0\/12/);
+    agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: firstForA.seq, messageId: firstForA.messageId }));
+    agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: firstForB.seq, messageId: firstForB.messageId }));
 
     agentA.socket.send(JSON.stringify({
       type: "agent.message",
-      clientMessageId: "reply-1",
+      clientMessageId: "reply-a",
       groupId: "group-a",
       content: "Agent A reply",
       parentMessageId: firstForA.messageId,
       rootMessageId: firstForA.rootMessageId,
       depth: 1,
     }));
-    const accepted = await agentA.waitFor((event) => event.type === "message.accepted" && event.clientMessageId === "reply-1");
-    assert.equal(accepted.groupId, "group-a");
-    assert.equal(typeof accepted.messageId, "string");
-    agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: 1 }));
+    const acceptedA = await agentA.waitFor((event) => event.type === "message.accepted" && event.clientMessageId === "reply-a");
+    assert.equal(acceptedA.groupId, "group-a");
+    const fromAForB = await agentB.waitFor((event) => event.type === "message" && event.content === "Agent A reply");
+    assert.equal(agentA.events.some((event) => event.type === "message" && event.content === "Agent A reply"), false);
+    assert.equal((fromAForB.sender as Record<string, unknown>).id, "agent-a");
+    assert.match(String(fromAForB.contentForAgent), /@agent-a Please analyze this/);
 
-    const secondForB = await agentB.waitFor((event) => event.type === "message" && event.content === "Agent A reply");
-    const replyingB = await user.waitFor((event) => event.type === "pipeline.status" && (event.currentAgent as Record<string, unknown>)?.id === "agent-b");
-    assert.equal(replyingB.state, "replying");
-    assert.equal((replyingB.agents as Array<Record<string, unknown>>)[0]?.status, "replied");
-    assert.equal((replyingB.agents as Array<Record<string, unknown>>)[1]?.status, "replying");
-    const secondPipeline = (secondForB.deliveryContext as Record<string, unknown>).pipeline as Record<string, unknown>;
-    assert.equal(secondPipeline.step, 2);
-    assert.equal(secondPipeline.totalSteps, 2);
-    assert.match(String(secondForB.contentForAgent), /Please analyze this/);
-    assert.match(String(secondForB.contentForAgent), /Agent A reply/);
-    assert.match(String(secondForB.contentForAgent), /exactly NO_REPLY/);
-    assert.equal(secondForB.sender && (secondForB.sender as Record<string, unknown>).id, "agent-a");
-    agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: 2 }));
-    const completed = await user.waitFor((event) => event.type === "pipeline.status" && event.state === "completed" && event.turnId === replyingB.turnId);
-    assert.equal((completed.agents as Array<Record<string, unknown>>)[0]?.status, "replied");
-    assert.equal((completed.agents as Array<Record<string, unknown>>)[1]?.status, "skipped");
+    agentB.socket.send(JSON.stringify({
+      type: "agent.message",
+      clientMessageId: "reply-b",
+      groupId: "group-a",
+      content: "Agent B reply",
+      parentMessageId: firstForB.messageId,
+      rootMessageId: firstForB.rootMessageId,
+      depth: 1,
+    }));
+    await agentB.waitFor((event) => event.type === "message.accepted" && event.clientMessageId === "reply-b");
+    const fromBForA = await agentA.waitFor((event) => event.type === "message" && event.content === "Agent B reply");
+    assert.equal((fromBForA.sender as Record<string, unknown>).id, "agent-b");
+    assert.match(String(fromBForA.contentForAgent), /Agent A reply/);
+    assert.match(String(fromBForA.contentForAgent), /Visible Agent replies so far: 2\/12/);
+    agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: fromAForB.seq, messageId: fromAForB.messageId }));
+    agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: fromBForA.seq, messageId: fromBForA.messageId }));
 
-    await postJson(`http://127.0.0.1:${port}/api/groups/group-a/messages`, {
-      senderType: "human",
-      senderId: ownerA.id,
-      content: "@agent-a Second turn",
-    });
-    const secondTurnForA = await agentA.waitFor((event) => event.type === "message" && event.content === "@agent-a Second turn");
-    assert.match(String(secondTurnForA.contentForAgent), /Mention State: DIRECT/);
-    agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: 3 }));
-    const secondTurnForB = await agentB.waitFor((event) => event.type === "message" && event.content === "@agent-a Second turn");
-    assert.match(String(secondTurnForB.contentForAgent), /Mention State: OTHER/);
-    agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: 3 }));
+    const completed = await user.waitFor((event) => event.type === "broadcast.status" && event.state === "completed", 7000);
+    assert.equal(completed.agentReplyCount, 2);
+    assert.deepEqual((completed.agents as Array<Record<string, unknown>>).map((agent) => agent.status).sort(), ["replied", "replied"]);
 
     await postJson(`http://127.0.0.1:${port}/api/groups/group-b/messages`, {
       senderType: "human",
@@ -316,12 +314,65 @@ test("Platform passes cumulative context to Agents in group order", async () => 
     });
     const betaForA = await agentA.waitFor((event) => event.type === "message" && event.content === "Beta-only message");
     assert.equal((betaForA.group as Record<string, unknown>).id, "group-b");
-    agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-b", seq: 1 }));
+    agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-b", seq: betaForA.seq, messageId: betaForA.messageId }));
     assert.equal(agentB.events.some((event) => event.type === "message" && event.content === "Beta-only message"), false);
   } finally {
     if (user) await closeSocket(user.socket);
     if (agentA) await closeSocket(agentA.socket);
     if (agentB) await closeSocket(agentB.socket);
+    await server.stop().catch(() => undefined);
+  }
+});
+
+
+test("Platform suppresses Agent replies after the per-root broadcast budget", async () => {
+  const store = new Store();
+  const server = new PlatformServer(store);
+  let agentSocket: SocketHarness | undefined;
+  try {
+    const owner = store.createUser({ id: "budget-owner", username: "budget-owner", displayName: "Budget Owner" });
+    const created = store.createAgent({ id: "budget-agent", displayName: "Budget Agent" });
+    const group = store.createGroup({ id: "budget-group", name: "Budget Group", ownerId: owner.id });
+    store.addMember({ groupId: group.id, memberType: "agent", memberId: created.agent.id });
+    await server.listen(0, "127.0.0.1");
+    const address = server.httpServer.address();
+    assert.ok(address && typeof address === "object");
+    agentSocket = await connectAgent(address.port, created.agent.id, created.token);
+    await postJson(`http://127.0.0.1:${address.port}/api/groups/${group.id}/messages`, {
+      senderType: "human",
+      senderId: owner.id,
+      content: "Start bounded broadcast",
+    });
+    const root = await agentSocket.waitFor((event) => event.type === "message" && event.content === "Start bounded broadcast");
+    agentSocket.socket.send(JSON.stringify({ type: "ack", groupId: group.id, seq: root.seq, messageId: root.messageId }));
+    const rootMessageId = String(root.rootMessageId || root.messageId);
+
+    for (let index = 1; index <= 12; index += 1) {
+      agentSocket.socket.send(JSON.stringify({
+        type: "agent.message",
+        clientMessageId: `budget-${index}`,
+        groupId: group.id,
+        content: `reply-${index}`,
+        parentMessageId: root.messageId,
+        rootMessageId,
+        depth: 1,
+      }));
+      await agentSocket.waitFor((event) => event.type === "message.accepted" && event.clientMessageId === `budget-${index}`);
+    }
+    agentSocket.socket.send(JSON.stringify({
+      type: "agent.message",
+      clientMessageId: "budget-13",
+      groupId: group.id,
+      content: "reply-13",
+      parentMessageId: root.messageId,
+      rootMessageId,
+      depth: 1,
+    }));
+    const suppressed = await agentSocket.waitFor((event) => event.type === "message.suppressed" && event.clientMessageId === "budget-13");
+    assert.equal(suppressed.reason, "max_agent_replies");
+    assert.equal(store.getMessages(group.id).length, 13);
+  } finally {
+    if (agentSocket) await closeSocket(agentSocket.socket);
     await server.stop().catch(() => undefined);
   }
 });

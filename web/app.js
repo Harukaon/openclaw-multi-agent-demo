@@ -10,10 +10,10 @@ const statusDot = document.querySelector("#status-dot");
 const sidebarStatus = document.querySelector("#sidebar-status");
 const titleEl = document.querySelector("#group-title");
 const subtitleEl = document.querySelector("#group-subtitle");
-const pipelineStatusEl = document.querySelector("#pipeline-status");
-const pipelineStatusTitleEl = document.querySelector("#pipeline-status-title");
-const pipelineStatusDetailEl = document.querySelector("#pipeline-status-detail");
-const pipelineAgentsEl = document.querySelector("#pipeline-agents");
+const broadcastStatusEl = document.querySelector("#broadcast-status");
+const broadcastStatusTitleEl = document.querySelector("#broadcast-status-title");
+const broadcastStatusDetailEl = document.querySelector("#broadcast-status-detail");
+const broadcastAgentsEl = document.querySelector("#broadcast-agents");
 const messagesEl = document.querySelector("#messages");
 const membersEl = document.querySelector("#members");
 const memberCountEl = document.querySelector("#member-count");
@@ -35,7 +35,7 @@ let agents = [];
 let messages = [];
 let selectedGroupId = "";
 let activeGroup = null;
-let pipelineStatuses = new Map();
+let broadcastStatuses = new Map();
 
 function setStatus(text, online = false) {
   statusEl.textContent = text;
@@ -44,47 +44,50 @@ function setStatus(text, online = false) {
   document.querySelector(".connection-dot").classList.toggle("online", online);
 }
 
-const pipelineAgentLabels = {
+const broadcastAgentLabels = {
   waiting: "等待中",
   replying: "回复中",
   replied: "已回复",
-  skipped: "已跳过",
-  offline: "离线跳过",
-  timeout: "超时跳过",
+  no_reply: "未回复",
+  limit: "已达上限",
+  offline: "离线",
+  timeout: "超时",
 };
 
-function renderPipelineStatus() {
-  const status = pipelineStatuses.get(selectedGroupId);
+function renderBroadcastStatus() {
+  const status = broadcastStatuses.get(selectedGroupId);
   if (!status || !activeGroup || status.group?.id !== activeGroup.id) {
-    pipelineStatusEl.className = "pipeline-status idle";
-    pipelineStatusTitleEl.textContent = "等待消息";
-    pipelineStatusDetailEl.textContent = "发送消息后，这里会显示当前回复 Agent";
-    pipelineAgentsEl.replaceChildren();
+    broadcastStatusEl.className = "broadcast-status idle";
+    broadcastStatusTitleEl.textContent = "等待消息";
+    broadcastStatusDetailEl.textContent = "发送消息后，这里会显示 Agent 广播状态";
+    broadcastAgentsEl.replaceChildren();
     return;
   }
 
-  pipelineStatusEl.className = `pipeline-status ${status.state}`;
+  broadcastStatusEl.className = `broadcast-status ${status.state}`;
+  const replyBudget = `${status.agentReplyCount}/${status.maxAgentReplies}`;
   if (status.state === "completed") {
-    pipelineStatusTitleEl.textContent = "本轮已完成";
-    pipelineStatusDetailEl.textContent = `${status.totalSteps}/${status.totalSteps} 个 Agent 已处理`;
-  } else if (status.currentAgent) {
-    pipelineStatusTitleEl.textContent = `${status.currentAgent.displayName} 回复中`;
-    pipelineStatusDetailEl.textContent = `第 ${status.step}/${status.totalSteps} 步 · 按群成员顺序处理`;
+    broadcastStatusTitleEl.textContent = "本轮广播已完成";
+    broadcastStatusDetailEl.textContent = `可见回复 ${replyBudget}`;
+  } else if (status.activeAgents?.length) {
+    const names = status.activeAgents.map((agent) => agent.displayName).join("、");
+    broadcastStatusTitleEl.textContent = `${names} 回复中`;
+    broadcastStatusDetailEl.textContent = `并行广播 · 可见回复 ${replyBudget}`;
   } else {
-    pipelineStatusTitleEl.textContent = "等待开始回复";
-    pipelineStatusDetailEl.textContent = `共 ${status.totalSteps} 个 Agent`;
+    broadcastStatusTitleEl.textContent = "等待 Agent 决策";
+    broadcastStatusDetailEl.textContent = `可见回复 ${replyBudget}`;
   }
 
-  pipelineAgentsEl.replaceChildren();
+  broadcastAgentsEl.replaceChildren();
   for (const agent of status.agents || []) {
     const chip = document.createElement("span");
-    chip.className = `pipeline-agent ${agent.status}`;
+    chip.className = `broadcast-agent ${agent.status}`;
     const name = document.createElement("b");
     name.textContent = agent.displayName;
     const state = document.createElement("span");
-    state.textContent = pipelineAgentLabels[agent.status] || agent.status;
+    state.textContent = broadcastAgentLabels[agent.status] || agent.status;
     chip.append(name, state);
-    pipelineAgentsEl.append(chip);
+    broadcastAgentsEl.append(chip);
   }
 }
 
@@ -148,15 +151,15 @@ function renderGroups() {
     name.className = "group-name";
     name.textContent = group.name;
     button.append(hash, name);
-    const pipeline = pipelineStatuses.get(group.id);
-    if (pipeline?.state === "replying" && pipeline.currentAgent) {
+    const broadcast = broadcastStatuses.get(group.id);
+    if (broadcast?.state === "broadcasting" && broadcast.activeAgents?.length) {
       const replying = document.createElement("span");
-      replying.className = "group-pipeline-badge replying";
-      replying.textContent = pipeline.currentAgent.displayName;
+      replying.className = "group-broadcast-badge replying";
+      replying.textContent = broadcast.activeAgents.map((agent) => agent.displayName).join("、");
       button.append(replying);
-    } else if (pipeline?.state === "completed") {
+    } else if (broadcast?.state === "completed") {
       const completed = document.createElement("span");
-      completed.className = "group-pipeline-badge completed";
+      completed.className = "group-broadcast-badge completed";
       completed.textContent = "完成";
       button.append(completed);
     }
@@ -272,7 +275,7 @@ async function selectGroup(groupId) {
   const group = groups.find((item) => item.id === groupId);
   activeGroup = group || null;
   renderAgentChoices();
-  renderPipelineStatus();
+  renderBroadcastStatus();
   if (!group) return;
   titleEl.textContent = group.name;
   subtitleEl.textContent = group.status === "paused" ? "群组已暂停" : "实时消息 · WebSocket";
@@ -286,7 +289,7 @@ async function selectGroup(groupId) {
     members = groupPayload.members || [];
     renderMessages();
     renderMembers();
-    renderPipelineStatus();
+    renderBroadcastStatus();
     contentInput.disabled = !socket || socket.readyState !== WebSocket.OPEN || group.status === "paused";
     sendButton.disabled = contentInput.disabled;
   } catch (error) {
@@ -306,15 +309,15 @@ function connect() {
     if (payload.type === "hello.ok") {
       setStatus("已连接", true);
       groups = payload.groups || [];
-      pipelineStatuses = new Map((payload.pipelineStatuses || []).map((status) => [status.group?.id, status]));
+      broadcastStatuses = new Map((payload.broadcastStatuses || []).map((status) => [status.group?.id, status]));
       if (!groups.some((group) => group.id === selectedGroupId)) selectedGroupId = groups[0]?.id || "";
       renderGroups();
       if (selectedGroupId) void selectGroup(selectedGroupId);
       else {
-        renderPipelineStatus();
+        renderBroadcastStatus();
         showEmpty("当前用户没有群组");
       }
-      renderPipelineStatus();
+      renderBroadcastStatus();
       connectButton.textContent = "重连";
       refreshButton.disabled = false;
       return;
@@ -325,10 +328,10 @@ function connect() {
       renderMessages();
       return;
     }
-    if (payload.type === "pipeline.status") {
-      pipelineStatuses.set(payload.group?.id, payload);
+    if (payload.type === "broadcast.status") {
+      broadcastStatuses.set(payload.group?.id, payload);
       renderGroups();
-      renderPipelineStatus();
+      renderBroadcastStatus();
       return;
     }
     if (payload.type === "error") setStatus(`错误：${payload.message}`);
@@ -391,9 +394,9 @@ userSelect.addEventListener("change", () => {
   members = [];
   activeGroup = null;
   selectedGroupId = "";
-  pipelineStatuses = new Map();
+  broadcastStatuses = new Map();
   renderGroups();
-  renderPipelineStatus();
+  renderBroadcastStatus();
   renderMembers();
   setManageFeedback("");
   socket?.close();

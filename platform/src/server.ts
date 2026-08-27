@@ -10,13 +10,13 @@ import type {
   AgentHello,
   AgentMessageEvent,
   AgentOutboundMessage,
-  AgentPipelineContext,
+  AgentBroadcastContext,
   Group,
   GroupMember,
   MentionState,
   MemberType,
-  PipelineAgentStatus,
-  PipelineStatusEvent,
+  BroadcastAgentStatus,
+  BroadcastStatusEvent,
   Sender,
   StoredMessage,
   UserHello,
@@ -25,32 +25,47 @@ import type {
 } from "./types.js";
 
 const CHANNEL_ID = "feedmob-group-chat";
-const configuredPipelineAckTimeout = Number(process.env.PIPELINE_ACK_TIMEOUT_MS || 120_000);
-const PIPELINE_ACK_TIMEOUT_MS = Number.isFinite(configuredPipelineAckTimeout) && configuredPipelineAckTimeout > 0
-  ? configuredPipelineAckTimeout
+const configuredBroadcastAckTimeout = Number(process.env.BROADCAST_ACK_TIMEOUT_MS || 120_000);
+const BROADCAST_ACK_TIMEOUT_MS = Number.isFinite(configuredBroadcastAckTimeout) && configuredBroadcastAckTimeout > 0
+  ? configuredBroadcastAckTimeout
   : 120_000;
+const configuredBroadcastMaxReplies = Number(process.env.BROADCAST_MAX_AGENT_REPLIES || 12);
+const BROADCAST_MAX_AGENT_REPLIES = Number.isFinite(configuredBroadcastMaxReplies) && configuredBroadcastMaxReplies > 0
+  ? Math.floor(configuredBroadcastMaxReplies)
+  : 12;
+const configuredBroadcastSettleMs = Number(process.env.BROADCAST_SETTLE_MS || 2_000);
+const BROADCAST_SETTLE_MS = Number.isFinite(configuredBroadcastSettleMs) && configuredBroadcastSettleMs >= 0
+  ? Math.floor(configuredBroadcastSettleMs)
+  : 2_000;
 
-type PipelineTurn = {
+type BroadcastTurn = {
   turnId: string;
   groupId: string;
   rootMessageId: string;
+  maxAgentReplies: number;
+  agentReplyCount: number;
+  pendingDeliveries: number;
+  agents: BroadcastStatusEvent["agents"];
+  repliedAgents: Set<string>;
+  cancelled?: boolean;
+  completed?: boolean;
+  settleTimer?: ReturnType<typeof setTimeout>;
 };
 
-type PipelineStep = PipelineTurn & {
+type BroadcastStep = BroadcastTurn & {
   agentId: string;
   messageId: string;
-  step: number;
-  totalSteps: number;
+  seq: number;
 };
 
-type PipelineAckResult = "acked" | "timeout" | "offline";
+type BroadcastAckResult = "acked" | "timeout" | "offline";
 
-type PipelineAckWaiter = {
+type BroadcastAckWaiter = {
   agentId: string;
   groupId: string;
   messageId: string;
   seq: number;
-  resolve: (result: PipelineAckResult) => void;
+  resolve: (result: BroadcastAckResult) => void;
   timer: ReturnType<typeof setTimeout>;
 };
 
@@ -90,15 +105,6 @@ function parseMemberType(value: unknown): MemberType | undefined {
   return value === "human" || value === "agent" ? value : undefined;
 }
 
-function pipelineMentionState(agentId: string, conversation: readonly StoredMessage[]): MentionState {
-  const latest = conversation.at(-1);
-  if (latest?.sender.type === "agent" && latest.sender.id === agentId) return "SELF";
-  if (conversation.some((message) => message.mentions.some((mention) => mention.type === "agent" && mention.id === agentId))) {
-    return "DIRECT";
-  }
-  return conversation.some((message) => message.mentions.length > 0) ? "OTHER" : "NONE";
-}
-
 export class PlatformServer {
   readonly app = express();
   readonly httpServer: HttpServer;
@@ -107,10 +113,11 @@ export class PlatformServer {
   readonly agentSockets = new Map<string, WebSocket>();
   readonly userSockets = new Map<string, Set<WebSocket>>();
   readonly store: Store;
-  private readonly pipelineQueues = new Map<string, Promise<void>>();
-  private readonly activePipelineSteps = new Map<string, PipelineStep>();
-  private readonly pipelineAckWaiters = new Map<string, PipelineAckWaiter>();
-  private readonly pipelineStatuses = new Map<string, PipelineStatusEvent>();
+  private readonly broadcastTurns = new Map<string, BroadcastTurn>();
+  private readonly broadcastDeliveryQueues = new Map<string, Promise<void>>();
+  private readonly broadcastDeliveryKeys = new Set<string>();
+  private readonly broadcastAckWaiters = new Map<string, BroadcastAckWaiter>();
+  private readonly broadcastStatuses = new Map<string, BroadcastStatusEvent>();
 
   constructor(store = new Store(process.env.DATABASE_FILE || ":memory:")) {
     this.store = store;
@@ -136,11 +143,15 @@ export class PlatformServer {
   }
 
   async stop(): Promise<void> {
-    for (const waiter of this.pipelineAckWaiters.values()) {
+    for (const waiter of this.broadcastAckWaiters.values()) {
       clearTimeout(waiter.timer);
       waiter.resolve("offline");
     }
-    this.pipelineAckWaiters.clear();
+    this.broadcastAckWaiters.clear();
+    for (const turn of this.broadcastTurns.values()) {
+      turn.cancelled = true;
+      if (turn.settleTimer) clearTimeout(turn.settleTimer);
+    }
     const sockets = new Set<WebSocket>([...this.agentWss.clients, ...this.userWss.clients]);
     await Promise.all([...sockets].map((socket) => this.closeSocket(socket)));
     return new Promise((resolve, reject) => {
@@ -290,7 +301,7 @@ export class PlatformServer {
           parentMessageId: asString(req.body?.parentMessageId),
           rootMessageId: asString(req.body?.rootMessageId),
         });
-        if (sender.type === "human") this.enqueuePipeline(group, message);
+        if (sender.type === "human") this.startBroadcast(group, message);
         return res.status(201).json({ message });
       } catch (error) {
         return httpError(res, 409, error instanceof Error ? error.message : "message rejected");
@@ -304,6 +315,7 @@ export class PlatformServer {
       if (actorId !== group.ownerId) return httpError(res, 403, "only the group owner may pause a group");
       const paused = req.body?.paused !== false;
       this.store.setGroupStatus(group.id, paused ? "paused" : "active");
+      if (paused) this.resetBroadcastGroup(group.id);
       return res.json({ group: this.store.getGroup(group.id) });
     });
     this.app.post("/api/groups/:groupId/reset", (req, res) => {
@@ -312,6 +324,7 @@ export class PlatformServer {
       if (!group) return httpError(res, 404, "group not found");
       if (actorId !== group.ownerId) return httpError(res, 403, "only the group owner may reset a group");
       this.store.resetGroup(group.id);
+      this.resetBroadcastGroup(group.id);
       return res.json({ ok: true, groupId: group.id });
     });
 
@@ -343,7 +356,7 @@ export class PlatformServer {
         if (agentId && this.agentSockets.get(agentId) === socket) {
           this.agentSockets.delete(agentId);
           this.store.setAgentConnection(agentId, false);
-          this.resolvePipelineWaitersForAgent(agentId);
+          this.resolveBroadcastWaitersForAgent(agentId);
         }
       });
       socket.on("error", () => undefined);
@@ -420,7 +433,7 @@ export class PlatformServer {
         return sendJson(socket, errorPayload("invalid_ack", "invalid group membership or sequence"));
       }
       this.store.ack({ agentId, groupId: ack.groupId, seq: ack.seq, messageId: ack.messageId });
-      this.resolvePipelineAck(agentId, ack.groupId, ack.messageId, ack.seq);
+      this.resolveBroadcastAck(agentId, ack.groupId, ack.messageId, ack.seq);
       return;
     }
     if (message.type === "agent.message") {
@@ -440,12 +453,27 @@ export class PlatformServer {
       }
       const agent = this.store.getAgent(agentId);
       if (!agent) return sendJson(socket, errorPayload("agent_not_found", "agent not found"));
+      const rootMessageId = outbound.rootMessageId || outbound.parentMessageId;
+      const turn = rootMessageId ? this.broadcastTurns.get(rootMessageId) : undefined;
+      if (turn && (turn.completed || turn.agentReplyCount >= turn.maxAgentReplies)) {
+        if (!turn.completed) {
+          this.setBroadcastAgentStatus(turn, agentId, "limit");
+          this.publishBroadcastStatus(group, turn);
+        }
+        sendJson(socket, {
+          type: "message.suppressed",
+          clientMessageId: outbound.clientMessageId,
+          groupId: group.id,
+          reason: turn.completed ? "turn_completed" : "max_agent_replies",
+        });
+        return;
+      }
       const created = this.appendAndBroadcast({
         groupId: group.id,
         sender: { type: "agent", id: agent.id, name: agent.displayName },
         content: outbound.content,
         parentMessageId: outbound.parentMessageId,
-        rootMessageId: outbound.rootMessageId,
+        rootMessageId: rootMessageId,
         depth: outbound.depth,
       });
       sendJson(socket, {
@@ -483,9 +511,9 @@ export class PlatformServer {
         type: "hello.ok",
         channel: CHANNEL_ID,
         groups,
-        pipelineStatuses: groups
-          .map((group) => this.pipelineStatuses.get(group.id))
-          .filter((status): status is PipelineStatusEvent => Boolean(status)),
+        broadcastStatuses: groups
+          .map((group) => this.broadcastStatuses.get(group.id))
+          .filter((status): status is BroadcastStatusEvent => Boolean(status)),
       });
       return;
     }
@@ -513,7 +541,7 @@ export class PlatformServer {
         parentMessageId: outbound.parentMessageId,
         rootMessageId: outbound.rootMessageId,
       });
-      this.enqueuePipeline(group, createdMessage);
+      this.startBroadcast(group, createdMessage);
       return;
     }
     if (message.type === "ping") return sendJson(socket, { type: "pong", timestamp: Date.now() });
@@ -532,6 +560,7 @@ export class PlatformServer {
     const group = this.store.getGroup(input.groupId);
     if (!group) throw new Error("group not found after message append");
     this.broadcastMessage(group, message);
+    if (message.sender.type === "agent") this.broadcastAgentMessage(group, message);
     return message;
   }
 
@@ -557,142 +586,157 @@ export class PlatformServer {
     }
   }
 
-  private enqueuePipeline(group: Group, rootMessage: StoredMessage): void {
-    const previous = this.pipelineQueues.get(group.id) || Promise.resolve();
-    const next = previous
-      .then(() => this.runPipeline(group, rootMessage))
-      .catch((error: unknown) => {
-        console.error(`[${CHANNEL_ID}] pipeline failed group=${group.id}: ${String(error)}`);
-      });
-    this.pipelineQueues.set(group.id, next);
-    void next.finally(() => {
-      if (this.pipelineQueues.get(group.id) === next) this.pipelineQueues.delete(group.id);
-    });
+  private startBroadcast(group: Group, rootMessage: StoredMessage): void {
+    const turn = this.getOrCreateBroadcastTurn(group, rootMessage.rootMessageId || rootMessage.id);
+    if (turn.settleTimer) {
+      clearTimeout(turn.settleTimer);
+      turn.settleTimer = undefined;
+    }
+    for (const member of this.store.getGroupMembers(group.id).filter((item) => item.memberType === "agent")) {
+      this.queueBroadcastDelivery(turn, group, member, rootMessage);
+    }
+    this.publishBroadcastStatus(group, turn);
+    this.maybeSettleBroadcast(turn);
   }
 
-  private async runPipeline(group: Group, rootMessage: StoredMessage): Promise<void> {
-    const agents = this.store.getGroupMembers(group.id).filter((member) => member.memberType === "agent");
-    const turn: PipelineTurn = {
+  private getOrCreateBroadcastTurn(group: Group, rootMessageId: string): BroadcastTurn {
+    const existing = this.broadcastTurns.get(rootMessageId);
+    if (existing) return existing;
+    const turn: BroadcastTurn = {
       turnId: randomUUID(),
       groupId: group.id,
-      rootMessageId: rootMessage.rootMessageId || rootMessage.id,
+      rootMessageId,
+      maxAgentReplies: BROADCAST_MAX_AGENT_REPLIES,
+      agentReplyCount: 0,
+      pendingDeliveries: 0,
+      repliedAgents: new Set<string>(),
+      agents: this.store.getGroupMembers(group.id)
+        .filter((member) => member.memberType === "agent")
+        .map((member) => ({ id: member.memberId, displayName: member.displayName, status: "waiting" as BroadcastAgentStatus })),
     };
-    const agentStatuses = agents.map((member) => ({
-      id: member.memberId,
-      displayName: member.displayName,
-      status: "waiting" as PipelineAgentStatus,
-    }));
-
-    this.publishPipelineStatus(group, {
-      type: "pipeline.status",
-      group: { id: group.id, name: group.name },
-      turnId: turn.turnId,
-      rootMessageId: turn.rootMessageId,
-      state: "queued",
-      step: 0,
-      totalSteps: agents.length,
-      agents: agentStatuses,
-      updatedAt: new Date().toISOString(),
-    });
-
-    for (const [index, member] of agents.entries()) {
-      const agentStatus = agentStatuses[index];
-      if (!agentStatus) continue;
-      const currentGroup = this.store.getGroup(group.id);
-      if (!currentGroup) return;
-      if (currentGroup.status === "paused") {
-        for (const agent of agentStatuses) if (agent.status === "waiting" || agent.status === "replying") agent.status = "skipped";
-        this.publishPipelineStatus(group, {
-          type: "pipeline.status",
-          group: { id: group.id, name: group.name },
-          turnId: turn.turnId,
-          rootMessageId: turn.rootMessageId,
-          state: "completed",
-          step: agents.length,
-          totalSteps: agents.length,
-          agents: agentStatuses,
-          updatedAt: new Date().toISOString(),
-        });
-        return;
-      }
-      if (!this.store.isMember(group.id, "agent", member.memberId)) {
-        agentStatus.status = "skipped";
-        this.publishPipelineStatus(group, this.pipelineStatusFor(turn, agents.length, agentStatuses, index + 1));
-        continue;
-      }
-
-      const conversation = this.store
-        .getMessages(group.id)
-        .filter((message) => message.rootMessageId === turn.rootMessageId);
-      const latest = conversation.at(-1) || rootMessage;
-      const step: PipelineStep = {
-        ...turn,
-        agentId: member.memberId,
-        messageId: latest.id,
-        step: index + 1,
-        totalSteps: agents.length,
-      };
-      const socket = this.agentSockets.get(member.memberId);
-      agentStatus.status = "replying";
-      this.publishPipelineStatus(group, this.pipelineStatusFor(turn, agents.length, agentStatuses, index + 1, member));
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
-        this.store.markDeliveryResult(latest.id, group.id, member.memberId, "queued");
-        agentStatus.status = "offline";
-        this.publishPipelineStatus(group, this.pipelineStatusFor(turn, agents.length, agentStatuses, index + 1));
-        continue;
-      }
-
-      this.activePipelineSteps.set(group.id, step);
-      const ackResultPromise = this.waitForPipelineAck(step);
-      this.sendPipelineStep(socket, member, currentGroup, latest, step, conversation);
-      const ackResult = await ackResultPromise;
-      const currentMessages = this.store
-        .getMessages(group.id)
-        .filter((message) => message.rootMessageId === turn.rootMessageId);
-      const hasVisibleReply = currentMessages.some(
-        (message) => message.seq > latest.seq && message.sender.type === "agent" && message.sender.id === member.memberId,
-      );
-      if (this.activePipelineSteps.get(group.id) === step) this.activePipelineSteps.delete(group.id);
-
-      if (ackResult === "timeout") agentStatus.status = "timeout";
-      else if (ackResult === "offline") agentStatus.status = "offline";
-      else agentStatus.status = hasVisibleReply ? "replied" : "skipped";
-      this.publishPipelineStatus(group, this.pipelineStatusFor(turn, agents.length, agentStatuses, index + 1));
-    }
-
-    this.publishPipelineStatus(group, {
-      type: "pipeline.status",
-      group: { id: group.id, name: group.name },
-      turnId: turn.turnId,
-      rootMessageId: turn.rootMessageId,
-      state: "completed",
-      step: agents.length,
-      totalSteps: agents.length,
-      agents: agentStatuses,
-      updatedAt: new Date().toISOString(),
-    });
+    this.broadcastTurns.set(rootMessageId, turn);
+    return turn;
   }
 
-  private sendPipelineStep(
+  private queueBroadcastDelivery(turn: BroadcastTurn, group: Group, member: GroupMember, message: StoredMessage): void {
+    if (turn.cancelled || (message.sender.type === "agent" && message.sender.id === member.memberId)) {
+      this.store.markDeliveryResult(message.id, group.id, member.memberId, "skipped");
+      return;
+    }
+    const deliveryKey = `${turn.turnId}:${message.id}:${member.memberId}`;
+    if (this.broadcastDeliveryKeys.has(deliveryKey)) return;
+    this.broadcastDeliveryKeys.add(deliveryKey);
+    this.ensureBroadcastAgent(turn, member);
+    this.setBroadcastAgentStatus(turn, member.memberId, "waiting");
+    turn.pendingDeliveries += 1;
+    const queueKey = `${group.id}:${member.memberId}`;
+    const previous = this.broadcastDeliveryQueues.get(queueKey) || Promise.resolve();
+    const next = previous
+      .then(() => this.deliverBroadcastMessage(turn, group, member, message))
+      .catch((error: unknown) => {
+        console.error(`[${CHANNEL_ID}] broadcast delivery failed group=${group.id} agent=${member.memberId}: ${String(error)}`);
+        this.setBroadcastAgentStatus(turn, member.memberId, "offline");
+      })
+      .finally(() => {
+        turn.pendingDeliveries = Math.max(0, turn.pendingDeliveries - 1);
+        if (this.broadcastDeliveryQueues.get(queueKey) === next) this.broadcastDeliveryQueues.delete(queueKey);
+        this.maybeSettleBroadcast(turn);
+      });
+    this.broadcastDeliveryQueues.set(queueKey, next);
+  }
+
+  private async deliverBroadcastMessage(turn: BroadcastTurn, group: Group, member: GroupMember, message: StoredMessage): Promise<void> {
+    if (turn.cancelled) return;
+    const socket = this.agentSockets.get(member.memberId);
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      this.store.markDeliveryResult(message.id, group.id, member.memberId, "offline");
+      this.setBroadcastAgentStatus(turn, member.memberId, "offline");
+      return;
+    }
+    const conversation = this.store.getMessages(group.id)
+      .filter((item) => item.rootMessageId === turn.rootMessageId && item.seq <= message.seq);
+    const step: BroadcastStep = {
+      ...turn,
+      agentId: member.memberId,
+      messageId: message.id,
+      seq: message.seq,
+    };
+    this.setBroadcastAgentStatus(turn, member.memberId, "replying");
+    this.publishBroadcastStatus(group, turn);
+    const ackResultPromise = this.waitForBroadcastAck(step);
+    this.sendBroadcastStep(socket, member, group, message, step, conversation);
+    const ackResult = await ackResultPromise;
+    if (turn.cancelled) return;
+    const hasVisibleReply = this.store.hasAgentReplyTo(message.id, group.id, member.memberId);
+    if (ackResult === "timeout") {
+      this.store.markDeliveryResult(message.id, group.id, member.memberId, "timeout");
+      this.setBroadcastAgentStatus(turn, member.memberId, "timeout");
+    } else if (ackResult === "offline") {
+      this.store.markDeliveryResult(message.id, group.id, member.memberId, "offline");
+      this.setBroadcastAgentStatus(turn, member.memberId, "offline");
+    } else {
+      this.store.markDeliveryResult(message.id, group.id, member.memberId, "acked");
+      if (hasVisibleReply) turn.repliedAgents.add(member.memberId);
+      this.setBroadcastAgentStatus(turn, member.memberId, hasVisibleReply || turn.repliedAgents.has(member.memberId) ? "replied" : "no_reply");
+    }
+    this.publishBroadcastStatus(group, turn);
+  }
+
+  private sendBroadcastStep(
     socket: WebSocket,
     member: GroupMember,
     group: Group,
     message: StoredMessage,
-    step: PipelineStep,
+    step: BroadcastStep,
     conversation: readonly StoredMessage[],
   ): void {
-    const pipeline: AgentPipelineContext = {
+    const broadcast: AgentBroadcastContext = {
       turnId: step.turnId,
-      step: step.step,
-      totalSteps: step.totalSteps,
       rootMessageId: step.rootMessageId,
+      depth: message.depth,
+      agentReplyCount: step.agentReplyCount,
+      maxAgentReplies: step.maxAgentReplies,
     };
     sendJson(socket, this.buildAgentEvent(member, group, message, {
-      pipeline,
+      broadcast,
       conversation,
-      mentionState: pipelineMentionState(member.memberId, conversation),
+      mentionState: mentionStateFor(message.sender.type, message.sender.id, member.memberId, message.mentions),
     }));
     this.store.markDelivered(message.id, group.id, member.memberId);
+  }
+
+  private ensureBroadcastAgent(turn: BroadcastTurn, member: GroupMember): void {
+    if (turn.agents.some((agent) => agent.id === member.memberId)) return;
+    turn.agents.push({ id: member.memberId, displayName: member.displayName, status: "waiting" });
+  }
+
+  private setBroadcastAgentStatus(turn: BroadcastTurn, agentId: string, status: BroadcastAgentStatus): void {
+    const entry = turn.agents.find((agent) => agent.id === agentId);
+    if (entry) entry.status = status;
+  }
+
+  private broadcastAgentMessage(group: Group, message: StoredMessage): void {
+    const turn = this.getOrCreateBroadcastTurn(group, message.rootMessageId || message.id);
+    if (turn.settleTimer) {
+      clearTimeout(turn.settleTimer);
+      turn.settleTimer = undefined;
+    }
+    turn.agentReplyCount += 1;
+    turn.repliedAgents.add(message.sender.id);
+    this.ensureBroadcastAgent(turn, {
+      groupId: group.id,
+      memberType: "agent",
+      memberId: message.sender.id,
+      role: "member",
+      displayName: message.sender.name,
+      joinedAt: message.createdAt,
+    });
+    this.setBroadcastAgentStatus(turn, message.sender.id, "replied");
+    for (const member of this.store.getGroupMembers(group.id).filter((item) => item.memberType === "agent")) {
+      this.queueBroadcastDelivery(turn, group, member, message);
+    }
+    this.publishBroadcastStatus(group, turn);
+    this.maybeSettleBroadcast(turn);
   }
 
   private sendMessageToAgent(agentId: string, message: StoredMessage): void {
@@ -700,14 +744,7 @@ export class PlatformServer {
     const member = this.store.getGroupMembers(message.groupId).find((item) => item.memberType === "agent" && item.memberId === agentId);
     const socket = this.agentSockets.get(agentId);
     if (!group || !member || !socket) return;
-    const active = this.activePipelineSteps.get(group.id);
-    if (active?.agentId === agentId && active.messageId === message.id) {
-      const conversation = this.store
-        .getMessages(group.id)
-        .filter((item) => item.rootMessageId === active.rootMessageId);
-      this.sendPipelineStep(socket, member, group, message, active, conversation);
-      return;
-    }
+    // Replays are observations only. The plugin ACKs them without starting a new turn.
     sendJson(socket, this.buildAgentEvent(member, group, message));
     this.store.markDelivered(message.id, group.id, agentId);
   }
@@ -716,7 +753,7 @@ export class PlatformServer {
     member: GroupMember,
     group: Group,
     message: StoredMessage,
-    options: { pipeline?: AgentPipelineContext; conversation?: readonly StoredMessage[]; mentionState?: MentionState } = {},
+    options: { broadcast?: AgentBroadcastContext; conversation?: readonly StoredMessage[]; mentionState?: MentionState } = {},
   ): AgentMessageEvent {
     const mentionState = options.mentionState ?? mentionStateFor(message.sender.type, message.sender.id, member.memberId, message.mentions);
     return {
@@ -732,7 +769,7 @@ export class PlatformServer {
         sender: message.sender,
         content: message.content,
         mentionState,
-        pipeline: options.pipeline,
+        broadcast: options.broadcast,
         conversation: options.conversation,
       }),
       mentions: message.mentions,
@@ -745,37 +782,31 @@ export class PlatformServer {
         groupName: group.name,
         mentionState,
         selfMessage: mentionState === "SELF",
-        pipeline: options.pipeline,
+        broadcast: options.broadcast,
       },
     };
   }
 
-  private pipelineStatusFor(
-    turn: PipelineTurn,
-    totalSteps: number,
-    agents: PipelineStatusEvent["agents"],
-    step: number,
-    currentMember?: GroupMember,
-  ): PipelineStatusEvent {
-    const currentAgent = currentMember
-      ? { id: currentMember.memberId, displayName: currentMember.displayName }
-      : agents.find((agent) => agent.status === "replying");
+  private broadcastStatusFor(turn: BroadcastTurn): BroadcastStatusEvent {
     return {
-      type: "pipeline.status",
+      type: "broadcast.status",
       group: { id: turn.groupId, name: this.store.getGroup(turn.groupId)?.name || turn.groupId },
       turnId: turn.turnId,
       rootMessageId: turn.rootMessageId,
-      state: currentAgent ? "replying" : "queued",
-      step,
-      totalSteps,
-      currentAgent: currentAgent ? { id: currentAgent.id, displayName: currentAgent.displayName } : undefined,
-      agents,
+      state: "broadcasting",
+      activeAgents: turn.agents
+        .filter((agent) => agent.status === "waiting" || agent.status === "replying")
+        .map(({ id, displayName }) => ({ id, displayName })),
+      agentReplyCount: turn.agentReplyCount,
+      maxAgentReplies: turn.maxAgentReplies,
+      agents: turn.agents,
       updatedAt: new Date().toISOString(),
     };
   }
 
-  private publishPipelineStatus(group: Group, status: PipelineStatusEvent): void {
-    this.pipelineStatuses.set(group.id, status);
+  private publishBroadcastStatus(group: Group, turn: BroadcastTurn): void {
+    const status = this.broadcastStatusFor(turn);
+    this.broadcastStatuses.set(group.id, status);
     const humanMembers = this.store.getGroupMembers(group.id).filter((member) => member.memberType === "human");
     for (const member of humanMembers) {
       const sockets = this.userSockets.get(member.memberId);
@@ -784,45 +815,88 @@ export class PlatformServer {
     }
   }
 
-  private waitForPipelineAck(step: PipelineStep): Promise<PipelineAckResult> {
-    const key = this.pipelineAckKey(step.agentId, step.groupId, step.messageId);
+  private maybeSettleBroadcast(turn: BroadcastTurn): void {
+    if (turn.cancelled || turn.pendingDeliveries > 0 || turn.settleTimer) return;
+    turn.settleTimer = setTimeout(() => {
+      turn.settleTimer = undefined;
+      if (turn.cancelled || turn.pendingDeliveries > 0) return;
+      turn.completed = true;
+      for (const agent of turn.agents) {
+        if (agent.status === "waiting" || agent.status === "replying" || agent.status === "no_reply") {
+          agent.status = turn.repliedAgents.has(agent.id) ? "replied" : "no_reply";
+        }
+      }
+      const group = this.store.getGroup(turn.groupId);
+      if (!group) return;
+      const status: BroadcastStatusEvent = {
+        ...this.broadcastStatusFor(turn),
+        state: "completed",
+      };
+      this.broadcastStatuses.set(group.id, status);
+      const humanMembers = this.store.getGroupMembers(group.id).filter((member) => member.memberType === "human");
+      for (const member of humanMembers) {
+        const sockets = this.userSockets.get(member.memberId);
+        if (!sockets) continue;
+        for (const socket of sockets) sendJson(socket, status);
+      }
+    }, BROADCAST_SETTLE_MS);
+  }
+
+  private waitForBroadcastAck(step: BroadcastStep): Promise<BroadcastAckResult> {
+    const key = this.broadcastAckKey(step.agentId, step.groupId, step.messageId);
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        this.pipelineAckWaiters.delete(key);
+        this.broadcastAckWaiters.delete(key);
         resolve("timeout");
-      }, PIPELINE_ACK_TIMEOUT_MS);
-      this.pipelineAckWaiters.set(key, {
+      }, BROADCAST_ACK_TIMEOUT_MS);
+      this.broadcastAckWaiters.set(key, {
         agentId: step.agentId,
         groupId: step.groupId,
         messageId: step.messageId,
-        seq: this.store.getMessages(step.groupId).find((message) => message.id === step.messageId)?.seq || 0,
+        seq: step.seq,
         resolve,
         timer,
       });
     });
   }
 
-  private resolvePipelineAck(agentId: string, groupId: string, messageId: string | undefined, seq: number): void {
-    for (const [key, waiter] of this.pipelineAckWaiters) {
+  private resolveBroadcastAck(agentId: string, groupId: string, messageId: string | undefined, seq: number): void {
+    for (const [key, waiter] of this.broadcastAckWaiters) {
       if (waiter.agentId !== agentId || waiter.groupId !== groupId) continue;
       if (messageId ? waiter.messageId !== messageId : waiter.seq > seq) continue;
       clearTimeout(waiter.timer);
-      this.pipelineAckWaiters.delete(key);
+      this.broadcastAckWaiters.delete(key);
       waiter.resolve("acked");
     }
   }
 
-  private resolvePipelineWaitersForAgent(agentId: string): void {
-    for (const [key, waiter] of this.pipelineAckWaiters) {
+  private resolveBroadcastWaitersForAgent(agentId: string): void {
+    for (const [key, waiter] of this.broadcastAckWaiters) {
       if (waiter.agentId !== agentId) continue;
       clearTimeout(waiter.timer);
-      this.pipelineAckWaiters.delete(key);
+      this.broadcastAckWaiters.delete(key);
       waiter.resolve("offline");
     }
   }
 
-  private pipelineAckKey(agentId: string, groupId: string, messageId: string): string {
+  private broadcastAckKey(agentId: string, groupId: string, messageId: string): string {
     return `${agentId}:${groupId}:${messageId}`;
+  }
+
+  private resetBroadcastGroup(groupId: string): void {
+    for (const [rootMessageId, turn] of this.broadcastTurns) {
+      if (turn.groupId !== groupId) continue;
+      turn.cancelled = true;
+      if (turn.settleTimer) clearTimeout(turn.settleTimer);
+      this.broadcastTurns.delete(rootMessageId);
+    }
+    for (const [key, waiter] of this.broadcastAckWaiters) {
+      if (waiter.groupId !== groupId) continue;
+      clearTimeout(waiter.timer);
+      this.broadcastAckWaiters.delete(key);
+      waiter.resolve("offline");
+    }
+    this.broadcastStatuses.delete(groupId);
   }
 
   private resolveSender(type: MemberType, id: string): Sender | null {

@@ -6,9 +6,9 @@
 
 1. Platform 保存 Human、Agent、Group、Membership、Message。
 2. 一个 Agent 只建立一个 Platform WebSocket 连接。
-3. Platform 按 `group_id` 做成员校验、稳定序号和 ACK，并按 Agent 成员顺序串行编排每个用户 turn。
+3. Platform 按 `group_id` 做成员校验、稳定序号和 ACK，并按 `rootMessageId` 管理受控 Agent 广播回合。
 4. OpenClaw Channel Plugin 将每个 `group_id` 映射为独立的 OpenClaw 群聊 Session；Platform 通过 `contentForAgent` 注入累计上下文，不修改 OpenClaw。
-5. 三个独立 OpenClaw 容器连接同一个 Platform，完成多 Agent、多 Group 端到端测试。
+5. 三个独立 OpenClaw 容器连接同一个 Platform，完成多 Agent、多 Group 的并发广播端到端测试。
 6. 提供最小可用的 HTTP API 和 WebSocket 协议；UI 在协议稳定后再做，避免先做不可验证的页面。
 
 ## 对原计划的现实校正
@@ -64,15 +64,16 @@ Platform → Agent：
 
 Platform → 用户：
 
-- `hello.ok { groups, pipelineStatuses }`
+- `hello.ok { groups, broadcastStatuses }`
 - `message { group, seq, sender, content, mentions, parentMessageId?, rootMessageId?, depth, createdAt }`
-- `pipeline.status { group, turnId, rootMessageId, state, step, totalSteps, currentAgent?, agents, updatedAt }`
+- `broadcast.status { group, turnId, rootMessageId, state, activeAgents, agentReplyCount, maxAgentReplies, agents, updatedAt }`
+- `message.suppressed { clientMessageId?, groupId, reason }`
 - `error { code, message }`
 - `pong`
 
-`deliveryContext` 至少包含：`groupId`、`groupName`、`mentionState`、`selfMessage`。管线投递还包含 `pipeline { turnId, step, totalSteps, rootMessageId }`。Mention 状态限定在当前 Group：`SELF`、`DIRECT`、`OTHER`、`NONE`。`contentForAgent` 由 Platform 针对每个 Agent 注入当前群组、发送者、Mention 状态和累计对话；没有有效贡献时，提示 Agent 输出精确 `NO_REPLY`，插件将其静默，不写回群消息。`content` 始终保留当前原始消息。
+`deliveryContext` 至少包含：`groupId`、`groupName`、`mentionState`、`selfMessage`。广播投递还包含 `broadcast { turnId, rootMessageId, depth, agentReplyCount, maxAgentReplies }`。Mention 状态限定在当前 Group：`SELF`、`DIRECT`、`OTHER`、`NONE`。`contentForAgent` 由 Platform 针对每个 Agent 注入当前群组、发送者、Mention 状态和累计对话；没有有效贡献时，提示 Agent 输出精确 `NO_REPLY`，插件将其静默，不写回群消息。`content` 始终保留当前原始消息。
 
-`pipeline.status.state` 为 `queued`、`replying` 或 `completed`；`currentAgent` 表示当前轮到谁，`agents[].status` 为 `waiting`、`replying`、`replied`、`skipped`、`offline` 或 `timeout`。状态按 Group 广播给 Human 成员；`hello.ok.pipelineStatuses` 用于页面重连后恢复各群最新状态。
+`broadcast.status.state` 为 `broadcasting` 或 `completed`；`activeAgents` 表示当前等待/回复中的 Agent，`agentReplyCount/maxAgentReplies` 表示根消息回复预算，`agents[].status` 为 `waiting`、`replying`、`replied`、`no_reply`、`offline`、`timeout` 或 `limit`。状态按 Group 广播给 Human 成员；`hello.ok.broadcastStatuses` 用于页面重连后恢复各群最新状态。每个 `(turnId, messageId, agentId)` 只投递一次，每个 Agent 的同群投递串行化；暂停、重置、断线和 replay 不会启动新的旧回合。
 
 ## Channel Plugin MVP
 
@@ -80,9 +81,9 @@ Platform → 用户：
 
 - 使用配置的 Platform WebSocket 地址和 Agent token 连接；
 - 把 `message.group.id` 变成 OpenClaw 的稳定 group peer；
-- 把 Platform 的 sender、mentions、delivery context 和累计管线提示词注入当前 Agent turn；
+- 把 Platform 的 sender、mentions、delivery context 和累计广播提示词注入当前 Agent turn；
 - 将 OpenClaw 的文本回复通过同一连接写回原 `group_id`；精确 `NO_REPLY` 不写回；
-- ACK、断线重连和每群 replay。
+- ACK、断线重连和每群 replay；回放消息只观察并 ACK，不启动新的 Agent turn。
 
 插件不负责创建群、管理 Human、选择成员或定义 Agent 角色。
 
@@ -103,8 +104,8 @@ Platform → 用户：
 3. Mention 状态和 group-scoped seq。
 4. 一个真实 OpenClaw + 一个 Group。
 5. 一个真实 OpenClaw + 两个 Group，确认 Session 不串。
-6. 三个真实 OpenClaw + 两个/三个 Group，确认按成员顺序串行传递累计上下文，且不跨 Group。
-7. 断线、ACK、重连 replay、Group Pause/Reset。
+6. 三个真实 OpenClaw + 两个/三个 Group，确认并行广播、Agent 间 @ 回流、回复预算和 Group 隔离。
+7. 断线、ACK、重连 replay、Group Pause/Reset，确认 replay 不重新触发 turn。
 8. 最后再做 UI 和演示手册。
 
 未实现的能力必须明确标记为未实现，不用“看起来能工作”的假成功替代测试证据。
