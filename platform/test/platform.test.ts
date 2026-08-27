@@ -65,6 +65,7 @@ test("Agent prompt injection preserves the message and explains each mention sta
   const direct = buildAgentContentForAgent({ ...base, mentionState: "DIRECT" });
   assert.match(direct, /Current Group: group-a \(Demo Room\)/);
   assert.match(direct, /Current Agent: agent-a \(Agent A\)/);
+  assert.match(direct, /你的身份是：Agent A（agent-a）/);
   assert.match(direct, /Mention State: DIRECT/);
   assert.match(direct, /直接 @ 了你/);
   assert.match(direct, /Please review this/);

@@ -9,6 +9,7 @@ export type AgentPromptInput = {
   broadcast?: AgentBroadcastContext;
   conversation?: readonly StoredMessage[];
   observation?: boolean;
+  groupAgents?: readonly Pick<Agent, "id" | "displayName">[];
 };
 
 function decisionInstruction(mentionState: MentionState): string {
@@ -36,7 +37,9 @@ export function buildAgentContentForAgent(input: AgentPromptInput): string {
     "[FeedMob group decision context]",
     `Current Group: ${input.group.id} (${input.group.name})`,
     `Current Agent: ${input.agent.id} (${input.agent.displayName})`,
-    `Sender: ${input.sender.name} (${input.sender.type})`,
+    `你的身份是：${input.agent.displayName}（${input.agent.id}）。你正在作为这个 Agent 处理消息，绝不能把自己和其他 Agent 混淆。`,
+    `当前消息发送者是：${input.sender.name}（${input.sender.type}），发送者不是你，除非身份字段明确相同。`,
+    `Group Agents: ${(input.groupAgents || []).map((agent) => `${agent.displayName} (${agent.id})`).join(", ") || "(none)"}`,
     `Mention State: ${input.mentionState}`,
     `Decision guidance: ${decisionInstruction(input.mentionState)}`,
   ];

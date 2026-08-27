@@ -844,6 +844,9 @@ export class PlatformServer {
         broadcast: options.broadcast,
         conversation: options.conversation,
         observation: options.observation,
+        groupAgents: this.store.getGroupMembers(group.id)
+          .filter((item) => item.memberType === "agent")
+          .map((item) => ({ id: item.memberId, displayName: item.displayName })),
       }),
       mentions: message.mentions,
       parentMessageId: message.parentMessageId,
