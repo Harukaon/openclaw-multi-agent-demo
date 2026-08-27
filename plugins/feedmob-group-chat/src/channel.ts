@@ -27,6 +27,13 @@ type RuntimeChannel = {
     buildContext: (params: Record<string, unknown>) => Promise<Record<string, unknown>> | Record<string, unknown>;
     run: (params: Record<string, unknown>) => Promise<{ dispatched: boolean; admission?: unknown }>;
   };
+  session: {
+    resolveStorePath: (store: unknown, params: { agentId: string }) => string;
+    recordInboundSession: (params: Record<string, unknown>) => Promise<void>;
+  };
+  reply: {
+    dispatchReplyWithBufferedBlockDispatcher: (params: Record<string, unknown>) => Promise<unknown>;
+  };
 };
 
 type GatewayContext = ChannelGatewayContext<ResolvedAccount>;
@@ -84,7 +91,13 @@ function resolveAccount(cfg: Record<string, unknown>, accountId?: string | null)
 
 function getChannelRuntime(ctx: GatewayContext): RuntimeChannel {
   const runtimeChannel = ctx.channelRuntime as unknown as RuntimeChannel | undefined;
-  if (!runtimeChannel?.inbound?.run || !runtimeChannel.routing?.resolveAgentRoute) {
+  if (
+    !runtimeChannel?.inbound?.run ||
+    !runtimeChannel.routing?.resolveAgentRoute ||
+    !runtimeChannel.session?.resolveStorePath ||
+    !runtimeChannel.session?.recordInboundSession ||
+    !runtimeChannel.reply?.dispatchReplyWithBufferedBlockDispatcher
+  ) {
     throw new Error(`${CHANNEL_ID}: OpenClaw channel runtime is unavailable`);
   }
   return runtimeChannel;
@@ -201,11 +214,12 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
         cfg: ctx.cfg,
         channel: CHANNEL_ID,
         accountId: ctx.accountId,
-        route: {
-          agentId: route.agentId,
-          sessionKey: route.sessionKey,
-        },
+        agentId: route.agentId,
+        routeSessionKey: route.sessionKey,
+        storePath: channel.session.resolveStorePath(ctx.cfg.session?.store, { agentId: route.agentId }),
         ctxPayload,
+        recordInboundSession: channel.session.recordInboundSession,
+        dispatchReplyWithBufferedBlockDispatcher: channel.reply.dispatchReplyWithBufferedBlockDispatcher,
         messageId: event.messageId,
         delivery: {
           observeMessageSent: true,
@@ -222,6 +236,10 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
             return { content: text, messageIds: [accepted.messageId], visibleReplySent: true };
           },
           onError: (error: unknown) => ctx.log?.error?.(`${CHANNEL_ID}: delivery failed: ${String(error)}`),
+        },
+        replyPipeline: {},
+        record: {
+          onRecordError: (error: unknown) => ctx.log?.error?.(`${CHANNEL_ID}: session record failed: ${String(error)}`),
         },
       }),
     },
