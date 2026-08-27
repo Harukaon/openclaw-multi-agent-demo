@@ -1,0 +1,29 @@
+# F2 ingress: HTTP is kept for the fast demo; HTTPS is enabled in parallel.
+
+http://groupchat-test.feedmob.it.com {
+	reverse_proxy 127.0.0.1:18788
+}
+
+groupchat-test.feedmob.it.com {
+	reverse_proxy 127.0.0.1:18788
+}
+
+http://groupchat-web-test.feedmob.it.com {
+	root * /var/www/feedmob-group-chat
+	encode gzip
+	file_server
+}
+
+groupchat-web-test.feedmob.it.com {
+	root * /var/www/feedmob-group-chat
+	encode gzip
+	file_server
+}
+
+http://agent-a-test.feedmob.it.com {
+	reverse_proxy 127.0.0.1:18790
+}
+
+agent-a-test.feedmob.it.com {
+	reverse_proxy 127.0.0.1:18790
+}

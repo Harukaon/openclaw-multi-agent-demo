@@ -1,0 +1,27 @@
+services:
+  openclaw-agent-a:
+    image: ${OPENCLAW_GROUP_IMAGE:-ghcr.io/harukaon/feedmob-openclaw-group-chat:latest}
+    container_name: openclaw-group-agent-a
+    restart: unless-stopped
+    init: true
+    mem_limit: 768m
+    mem_reservation: 512m
+    env_file:
+      - .env
+    environment:
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN_A:?set OPENCLAW_GATEWAY_TOKEN_A in .env}
+      FEEDMOB_GROUP_SERVER_URL: ${FEEDMOB_GROUP_SERVER_URL:-https://groupchat-test.feedmob.it.com}
+      FEEDMOB_GROUP_AGENT_ID: ${FEEDMOB_GROUP_AGENT_ID_A:?set FEEDMOB_GROUP_AGENT_ID_A in .env}
+      FEEDMOB_GROUP_AGENT_TOKEN: ${FEEDMOB_GROUP_AGENT_TOKEN_A:?set FEEDMOB_GROUP_AGENT_TOKEN_A in .env}
+      FEEDMOB_OPENCLAW_AGENT_ID: ${FEEDMOB_OPENCLAW_AGENT_ID_A:-main}
+    ports:
+      - "127.0.0.1:18790:18789"
+    volumes:
+      - ./state/agent-a:/home/node/.openclaw
+      - ./config/agent-a/openclaw.json:/home/node/.openclaw/openclaw.json:ro
+    command:
+      - sh
+      - -lc
+      - |
+        node /opt/camofox-plugin/dist/src/server.js >>/tmp/camofox-server.log 2>&1 &
+        exec openclaw gateway --bind lan --port 18789

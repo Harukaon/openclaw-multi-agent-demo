@@ -2,15 +2,11 @@
 import assert from "node:assert/strict";
 
 const baseUrl = (process.argv[2] || "http://127.0.0.1:18788").replace(/\/$/, "");
-const adminToken = process.env.PLATFORM_ADMIN_TOKEN;
 
 async function post(path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(adminToken ? { authorization: `Bearer ${adminToken}` } : {}),
-    },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   const payload = await response.json();
@@ -79,10 +75,12 @@ try {
   await post(`/api/groups/${groupB.id}/messages`, { senderType: "human", senderId: ownerB.id, content: "smoke-beta" });
   await waitFor(agentA.events, (event) => event.type === "message" && event.content === "smoke-alpha", "Agent A alpha");
   await waitFor(agentA.events, (event) => event.type === "message" && event.content === "smoke-beta", "Agent A beta");
-  await waitFor(agentB.events, (event) => event.type === "message" && event.content === "smoke-alpha", "Agent B alpha");
+  assert.equal(agentB.events.some((event) => event.type === "message" && event.content === "smoke-alpha"), false);
   assert.equal(agentB.events.some((event) => event.type === "message" && event.content === "smoke-beta"), false);
 
   agentA.socket.send(JSON.stringify({ type: "ack", groupId: groupA.id, seq: 1 }));
+  await waitFor(agentB.events, (event) => event.type === "message" && event.content === "smoke-alpha", "Agent B alpha after Agent A ACK");
+  agentB.socket.send(JSON.stringify({ type: "ack", groupId: groupA.id, seq: 1 }));
   await new Promise((resolve) => setTimeout(resolve, 50));
   await closeSocket(agentA.socket);
   agentA = await connectAgent(createdA.agent.id, createdA.token);

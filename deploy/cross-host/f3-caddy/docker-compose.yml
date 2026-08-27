@@ -1,0 +1,13 @@
+services:
+  feedmob-group-caddy:
+    image: caddy:2.11.4-alpine
+    container_name: feedmob-group-caddy
+    restart: unless-stopped
+    init: true
+    network_mode: host
+    mem_limit: 128m
+    mem_reservation: 64m
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data:/data
+      - ./config:/config

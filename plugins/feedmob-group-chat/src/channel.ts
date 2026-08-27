@@ -10,7 +10,6 @@ type ResolvedAccount = {
   agentId: string;
   openclawAgentId: string;
   token: string;
-  requireMention: boolean;
 };
 
 type RuntimeChannel = {
@@ -47,6 +46,7 @@ type GroupMessageEvent = GroupChatClientMessage & {
   messageId: string;
   sender: EventSender;
   content: string;
+  contentForAgent?: string;
   mentions: Array<Record<string, unknown>>;
   parentMessageId?: string;
   rootMessageId?: string;
@@ -57,6 +57,12 @@ type GroupMessageEvent = GroupChatClientMessage & {
     groupName: string;
     mentionState: "SELF" | "DIRECT" | "OTHER" | "NONE";
     selfMessage: boolean;
+    pipeline?: {
+      turnId: string;
+      step: number;
+      totalSteps: number;
+      rootMessageId: string;
+    };
   };
 };
 
@@ -85,7 +91,6 @@ function resolveAccount(cfg: Record<string, unknown>, accountId?: string | null)
       ? section.openclawAgentId.trim()
       : (process.env.FEEDMOB_OPENCLAW_AGENT_ID?.trim() || "main"),
     token: requiredString(section.token || process.env.FEEDMOB_GROUP_AGENT_TOKEN, "token"),
-    requireMention: section.requireMention === true || process.env.FEEDMOB_GROUP_REQUIRE_MENTION === "true",
   };
 }
 
@@ -120,17 +125,21 @@ function targetGroupId(target: unknown): string {
 
 async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient, event: GroupMessageEvent): Promise<void> {
   const delivery = event.deliveryContext;
-  const mentionState = delivery?.mentionState || "NONE";
-  if (delivery?.selfMessage || mentionState === "SELF" || event.sender.id === ctx.account.agentId) {
+  const isSelfMessage = delivery?.selfMessage === true || event.sender.id === ctx.account.agentId;
+  const mentionState = isSelfMessage ? "SELF" : (delivery?.mentionState || "NONE");
+  const contentForAgent = event.contentForAgent?.trim() || event.content;
+
+  // Platform owns the ordered fan-out. A message without pipeline metadata is
+  // only a replay/observation and must never start an OpenClaw turn.
+  const pipeline = delivery?.pipeline;
+  if (!pipeline) {
     client.send({ type: "ack", groupId: event.group.id, seq: event.seq, messageId: event.messageId });
-    return;
-  }
-  if (ctx.account.requireMention && mentionState !== "DIRECT") {
-    client.send({ type: "ack", groupId: event.group.id, seq: event.seq, messageId: event.messageId });
-    ctx.log?.info?.(`ignored non-mentioned message group=${event.group.id} seq=${event.seq}`);
+    ctx.log?.info?.(`observed non-pipeline message group=${event.group.id} seq=${event.seq}`);
     return;
   }
 
+  // The injected contentForAgent contains the complete conversation accumulated
+  // by the Platform. Mention state is prompt guidance, not a transport gate.
   const channel = getChannelRuntime(ctx);
   const peer = { kind: "group", id: `group:${event.group.id}` };
   const route = channel.routing.resolveAgentRoute({
@@ -152,7 +161,7 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
       name: event.sender.name,
       displayLabel: event.sender.name,
       isBot: event.sender.type === "agent",
-      isSelf: false,
+      isSelf: isSelfMessage,
     },
     conversation: {
       kind: "group",
@@ -177,7 +186,7 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
       inboundEventKind: "user_request",
       body: event.content,
       rawBody: event.content,
-      bodyForAgent: event.content,
+      bodyForAgent: contentForAgent,
       senderLabel: event.sender.name,
     },
     access: {
@@ -185,7 +194,7 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
         canDetectMention: true,
         wasMentioned: mentionState === "DIRECT",
         effectiveWasMentioned: mentionState === "DIRECT",
-        requireMention: ctx.account.requireMention,
+        requireMention: false,
       },
     },
     channelIngress: "unsupported",
@@ -197,7 +206,7 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
     },
   });
 
-  const result = await channel.inbound.run({
+  await channel.inbound.run({
     channel: CHANNEL_ID,
     accountId: ctx.accountId,
     raw: event,
@@ -206,7 +215,7 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
         id: event.messageId,
         timestamp: Date.parse(event.createdAt),
         rawText: event.content,
-        textForAgent: event.content,
+        textForAgent: contentForAgent,
         textForCommands: event.content,
         raw: event,
       }),
@@ -225,7 +234,7 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
           observeMessageSent: true,
           deliver: async (payload: { text?: string }) => {
             const text = typeof payload.text === "string" ? payload.text.trim() : "";
-            if (!text) return { visibleReplySent: false };
+            if (!text || text.toLocaleLowerCase() === "no_reply") return { visibleReplySent: false };
             const accepted = await client.sendAgentMessage({
               groupId: event.group.id,
               content: text,
@@ -244,9 +253,10 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
       }),
     },
   });
-  if (result.dispatched || result.admission) {
-    client.send({ type: "ack", groupId: event.group.id, seq: event.seq, messageId: event.messageId });
-  }
+  // ACK means this Platform pipeline step has finished. OpenClaw suppresses
+  // an exact NO_REPLY final response before delivery, so the Platform advances
+  // even when this Agent intentionally says nothing visible.
+  client.send({ type: "ack", groupId: event.group.id, seq: event.seq, messageId: event.messageId });
 }
 
 const accountConfig = {
@@ -290,7 +300,7 @@ const feedmobGroupChatPlugin: ChannelPlugin<ResolvedAccount> = {
       }),
     },
     groups: {
-      resolveRequireMention: ({ cfg, accountId }: { cfg: Record<string, unknown>; accountId?: string | null }) => resolveAccount(cfg, accountId).requireMention,
+      resolveRequireMention: () => false,
     },
     }),
     capabilities: {

@@ -63,11 +63,19 @@ export interface StoredMessage {
   createdAt: string;
 }
 
+export interface AgentPipelineContext {
+  turnId: string;
+  step: number;
+  totalSteps: number;
+  rootMessageId: string;
+}
+
 export interface DeliveryContext {
   groupId: string;
   groupName: string;
   mentionState: MentionState;
   selfMessage: boolean;
+  pipeline?: AgentPipelineContext;
 }
 
 export interface AgentMessageEvent {
@@ -77,6 +85,8 @@ export interface AgentMessageEvent {
   messageId: string;
   sender: Sender;
   content: string;
+  /** Platform-generated per-Agent prompt; the canonical message remains in content. */
+  contentForAgent?: string;
   mentions: Mention[];
   parentMessageId?: string | null;
   rootMessageId?: string | null;

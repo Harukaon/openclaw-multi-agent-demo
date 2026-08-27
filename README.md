@@ -17,6 +17,10 @@
 
 Compose 已为 Platform 配置 `384m` 上限/`256m` 保留，为每只 OpenClaw+Camofox 配置 `768m` 上限/`512m` 保留。验收门槛是宿主机至少保留 `500MiB` 可用内存，目标 `1GiB`；低于门槛先停 Agent C，再迁移，不影响现有服务。
 
+## 消息编排
+
+Platform 不修改 OpenClaw。一个群内的人类 turn 按 Agent 成员加入顺序串行投递：A 完成后，Platform 将用户原话和 A 的可见回复拼入 `contentForAgent`，再投递给 B。Agent 没有有效贡献时输出精确的 `NO_REPLY`（大小写不敏感、不得附加其他文字），插件将其静默；可见回复才会写入群历史并传给下一 Agent。
+
 ## 关键约束
 
 - 不在 feedmob2/feedmob3 上构建 Docker 镜像或编译项目。

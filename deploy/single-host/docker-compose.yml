@@ -13,7 +13,6 @@ services:
       HOST: 0.0.0.0
       PORT: 8787
       DATABASE_FILE: /data/platform.sqlite
-      ADMIN_TOKEN: ${PLATFORM_ADMIN_TOKEN:?set PLATFORM_ADMIN_TOKEN in .env}
     ports:
       - "127.0.0.1:18788:8787"
     volumes:
@@ -39,7 +38,6 @@ services:
       FEEDMOB_GROUP_AGENT_ID: ${FEEDMOB_GROUP_AGENT_ID_A:?set FEEDMOB_GROUP_AGENT_ID_A in .env}
       FEEDMOB_GROUP_AGENT_TOKEN: ${FEEDMOB_GROUP_AGENT_TOKEN_A:?set FEEDMOB_GROUP_AGENT_TOKEN_A in .env}
       FEEDMOB_OPENCLAW_AGENT_ID: ${FEEDMOB_OPENCLAW_AGENT_ID_A:-main}
-      FEEDMOB_GROUP_REQUIRE_MENTION: ${FEEDMOB_GROUP_REQUIRE_MENTION_A:-false}
     depends_on:
       feedmob-group-platform:
         condition: service_healthy
@@ -70,7 +68,6 @@ services:
       FEEDMOB_GROUP_AGENT_ID: ${FEEDMOB_GROUP_AGENT_ID_B:?set FEEDMOB_GROUP_AGENT_ID_B in .env}
       FEEDMOB_GROUP_AGENT_TOKEN: ${FEEDMOB_GROUP_AGENT_TOKEN_B:?set FEEDMOB_GROUP_AGENT_TOKEN_B in .env}
       FEEDMOB_OPENCLAW_AGENT_ID: ${FEEDMOB_OPENCLAW_AGENT_ID_B:-main}
-      FEEDMOB_GROUP_REQUIRE_MENTION: ${FEEDMOB_GROUP_REQUIRE_MENTION_B:-false}
     depends_on:
       feedmob-group-platform:
         condition: service_healthy
@@ -101,7 +98,6 @@ services:
       FEEDMOB_GROUP_AGENT_ID: ${FEEDMOB_GROUP_AGENT_ID_C:?set FEEDMOB_GROUP_AGENT_ID_C in .env}
       FEEDMOB_GROUP_AGENT_TOKEN: ${FEEDMOB_GROUP_AGENT_TOKEN_C:?set FEEDMOB_GROUP_AGENT_TOKEN_C in .env}
       FEEDMOB_OPENCLAW_AGENT_ID: ${FEEDMOB_OPENCLAW_AGENT_ID_C:-main}
-      FEEDMOB_GROUP_REQUIRE_MENTION: ${FEEDMOB_GROUP_REQUIRE_MENTION_C:-false}
     depends_on:
       feedmob-group-platform:
         condition: service_healthy

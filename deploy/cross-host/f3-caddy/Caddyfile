@@ -1,0 +1,16 @@
+# F3 ingress: HTTP is kept for the fast demo; HTTPS reuses/renews Caddy certs.
+http://agent-b-test.feedmob.it.com {
+	reverse_proxy 127.0.0.1:18790
+}
+
+agent-b-test.feedmob.it.com {
+	reverse_proxy 127.0.0.1:18790
+}
+
+http://agent-c-test.feedmob.it.com {
+	reverse_proxy 127.0.0.1:18791
+}
+
+agent-c-test.feedmob.it.com {
+	reverse_proxy 127.0.0.1:18791
+}

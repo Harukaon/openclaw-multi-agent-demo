@@ -8,8 +8,6 @@ services:
     mem_reservation: 256m
     env_file:
       - .env
-    environment:
-      ADMIN_TOKEN: ${PLATFORM_ADMIN_TOKEN:?set PLATFORM_ADMIN_TOKEN in .env}
     ports:
       - "${PLATFORM_BIND_IP:-172.31.26.99}:8787:8787"
     volumes:

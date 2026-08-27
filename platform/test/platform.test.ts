@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { WebSocket } from "ws";
 import { Store } from "../src/store.js";
 import { PlatformServer } from "../src/server.js";
+import { buildAgentContentForAgent } from "../src/agent-prompt.js";
 
 test("group-scoped sequence and mention parsing stay isolated", () => {
   const store = new Store();
@@ -42,26 +43,69 @@ test("group-scoped sequence and mention parsing stay isolated", () => {
   }
 });
 
-test("admin token protects REST mutations without affecting health", async () => {
+test("Agent prompt injection preserves the message and explains each mention state", () => {
+  const base = {
+    agent: { id: "agent-a", displayName: "Agent A" },
+    group: { id: "group-a", name: "Demo Room" },
+    sender: { type: "human" as const, id: "user-a", name: "User A" },
+    content: "Please review this",
+  };
+
+  const direct = buildAgentContentForAgent({ ...base, mentionState: "DIRECT" });
+  assert.match(direct, /Current Group: group-a \(Demo Room\)/);
+  assert.match(direct, /Current Agent: agent-a \(Agent A\)/);
+  assert.match(direct, /Mention State: DIRECT/);
+  assert.match(direct, /直接 @ 了你/);
+  assert.match(direct, /Please review this/);
+
+  const other = buildAgentContentForAgent({ ...base, mentionState: "OTHER" });
+  assert.match(other, /Mention State: OTHER/);
+  assert.match(other, /指向其他群成员或 Agent/);
+
+  const none = buildAgentContentForAgent({ ...base, mentionState: "NONE" });
+  assert.match(none, /Mention State: NONE/);
+  assert.match(none, /没有 @ 任何群成员/);
+
+  const self = buildAgentContentForAgent({ ...base, mentionState: "SELF" });
+  assert.match(self, /Mention State: SELF/);
+  assert.match(self, /由你自己发出/);
+});
+
+test("demo REST mutations are available without an admin token", async () => {
   const store = new Store();
-  const server = new PlatformServer(store, "admin-secret");
+  const server = new PlatformServer(store);
   try {
     await server.listen(0, "127.0.0.1");
     const address = server.httpServer.address();
     assert.ok(address && typeof address === "object");
     const url = `http://127.0.0.1:${address.port}/api/users`;
-    const rejected = await fetch(url, {
+    const created = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "blocked", displayName: "Blocked" }),
+      body: JSON.stringify({ username: "demo-user", displayName: "Demo User" }),
     });
-    assert.equal(rejected.status, 401);
-    const accepted = await fetch(url, {
+    assert.equal(created.status, 201);
+    const user = (await created.json()).user as { id: string };
+    const agentResponse = await fetch(`http://127.0.0.1:${address.port}/api/agents`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer admin-secret" },
-      body: JSON.stringify({ username: "accepted", displayName: "Accepted" }),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ displayName: "Demo Agent" }),
     });
-    assert.equal(accepted.status, 201);
+    assert.equal(agentResponse.status, 201);
+    const agent = (await agentResponse.json()).agent as { id: string };
+    const groupResponse = await fetch(`http://127.0.0.1:${address.port}/api/groups`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Demo Group", ownerId: user.id }),
+    });
+    assert.equal(groupResponse.status, 201);
+    const group = (await groupResponse.json()).group as { id: string };
+    const memberResponse = await fetch(`http://127.0.0.1:${address.port}/api/groups/${group.id}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ actorId: user.id, memberType: "agent", memberId: agent.id }),
+    });
+    assert.equal(memberResponse.status, 201);
   } finally {
     await server.stop().catch(() => undefined);
   }
@@ -70,7 +114,7 @@ test("admin token protects REST mutations without affecting health", async () =>
 type SocketHarness = {
   socket: WebSocket;
   events: Array<Record<string, unknown>>;
-  waitFor: (predicate: (event: Record<string, unknown>) => boolean) => Promise<Record<string, unknown>>;
+  waitFor: (predicate: (event: Record<string, unknown>) => boolean, timeoutMs?: number) => Promise<Record<string, unknown>>;
 };
 
 function connectAgent(port: number, agentId: string, token: string): Promise<SocketHarness> {
@@ -80,14 +124,28 @@ function connectAgent(port: number, agentId: string, token: string): Promise<Soc
     const waiters: Array<{
       predicate: (event: Record<string, unknown>) => boolean;
       resolve: (event: Record<string, unknown>) => void;
+      timer: ReturnType<typeof setTimeout>;
     }> = [];
     const harness: SocketHarness = {
       socket,
       events,
-      waitFor: (predicate) => {
+      waitFor: (predicate, timeoutMs = 5000) => {
         const existing = events.find(predicate);
         if (existing) return Promise.resolve(existing);
-        return new Promise((waitResolve) => waiters.push({ predicate, resolve: waitResolve }));
+        return new Promise((waitResolve, waitReject) => {
+          const waiter = {
+            predicate,
+            resolve: (event: Record<string, unknown>) => {
+              clearTimeout(waiter.timer);
+              waitResolve(event);
+            },
+            timer: setTimeout(() => {
+              waiters.splice(waiters.indexOf(waiter), 1);
+              waitReject(new Error("timed out waiting for test websocket event"));
+            }, timeoutMs),
+          };
+          waiters.push(waiter);
+        });
       },
     };
     socket.on("open", () => socket.send(JSON.stringify({ type: "hello", agentId, token })));
@@ -124,7 +182,7 @@ function closeSocket(socket: WebSocket): Promise<void> {
   });
 }
 
-test("one Agent connection receives only its Group memberships and replays per Group", async () => {
+test("Platform passes cumulative context to Agents in group order", async () => {
   const store = new Store();
   const server = new PlatformServer(store);
   let agentA: SocketHarness | undefined;
@@ -150,49 +208,58 @@ test("one Agent connection receives only its Group memberships and replays per G
     await postJson(`http://127.0.0.1:${port}/api/groups/group-a/messages`, {
       senderType: "human",
       senderId: ownerA.id,
-      content: "Alpha-only message",
+      content: "@agent-a Please analyze this",
     });
+    const firstForA = await agentA.waitFor((event) => event.type === "message" && event.content === "@agent-a Please analyze this");
+    assert.equal((firstForA.deliveryContext as Record<string, unknown>).pipeline && ((firstForA.deliveryContext as Record<string, unknown>).pipeline as Record<string, unknown>).step, 1);
+    assert.match(String(firstForA.contentForAgent), /Mention State: DIRECT/);
+    assert.equal(agentB.events.some((event) => event.type === "message" && event.content === "@agent-a Please analyze this"), false);
+
+    agentA.socket.send(JSON.stringify({
+      type: "agent.message",
+      clientMessageId: "reply-1",
+      groupId: "group-a",
+      content: "Agent A reply",
+      parentMessageId: firstForA.messageId,
+      rootMessageId: firstForA.rootMessageId,
+      depth: 1,
+    }));
+    const accepted = await agentA.waitFor((event) => event.type === "message.accepted" && event.clientMessageId === "reply-1");
+    assert.equal(accepted.groupId, "group-a");
+    assert.equal(typeof accepted.messageId, "string");
+    agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: 1 }));
+
+    const secondForB = await agentB.waitFor((event) => event.type === "message" && event.content === "Agent A reply");
+    const secondPipeline = (secondForB.deliveryContext as Record<string, unknown>).pipeline as Record<string, unknown>;
+    assert.equal(secondPipeline.step, 2);
+    assert.equal(secondPipeline.totalSteps, 2);
+    assert.match(String(secondForB.contentForAgent), /Please analyze this/);
+    assert.match(String(secondForB.contentForAgent), /Agent A reply/);
+    assert.match(String(secondForB.contentForAgent), /exactly NO_REPLY/);
+    assert.equal(secondForB.sender && (secondForB.sender as Record<string, unknown>).id, "agent-a");
+    agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: 2 }));
+
+    await postJson(`http://127.0.0.1:${port}/api/groups/group-a/messages`, {
+      senderType: "human",
+      senderId: ownerA.id,
+      content: "@agent-a Second turn",
+    });
+    const secondTurnForA = await agentA.waitFor((event) => event.type === "message" && event.content === "@agent-a Second turn");
+    assert.match(String(secondTurnForA.contentForAgent), /Mention State: DIRECT/);
+    agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: 3 }));
+    const secondTurnForB = await agentB.waitFor((event) => event.type === "message" && event.content === "@agent-a Second turn");
+    assert.match(String(secondTurnForB.contentForAgent), /Mention State: OTHER/);
+    agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: 3 }));
+
     await postJson(`http://127.0.0.1:${port}/api/groups/group-b/messages`, {
       senderType: "human",
       senderId: ownerB.id,
       content: "Beta-only message",
     });
-
-    const alphaForA = await agentA.waitFor((event) => event.type === "message" && event.group !== undefined && (event.group as Record<string, unknown>).id === "group-a");
-    const betaForA = await agentA.waitFor((event) => event.type === "message" && event.group !== undefined && (event.group as Record<string, unknown>).id === "group-b");
-    const alphaForB = await agentB.waitFor((event) => event.type === "message" && event.group !== undefined && (event.group as Record<string, unknown>).id === "group-a");
-    assert.equal((alphaForA.group as Record<string, unknown>).id, "group-a");
+    const betaForA = await agentA.waitFor((event) => event.type === "message" && event.content === "Beta-only message");
     assert.equal((betaForA.group as Record<string, unknown>).id, "group-b");
-    assert.equal((alphaForB.group as Record<string, unknown>).id, "group-a");
-    assert.equal(agentB.events.some((event) => event.type === "message" && event.group !== undefined && (event.group as Record<string, unknown>).id === "group-b"), false);
-
-    agentA.socket.send(JSON.stringify({ type: "agent.message", clientMessageId: "reply-1", groupId: "group-a", content: "Agent A reply" }));
-    const accepted = await agentA.waitFor((event) => event.type === "message.accepted" && event.clientMessageId === "reply-1");
-    const replyForB = await agentB.waitFor((event) => event.type === "message" && event.content === "Agent A reply");
-    assert.equal(accepted.groupId, "group-a");
-    assert.equal(typeof accepted.messageId, "string");
-    assert.equal(replyForB.sender && (replyForB.sender as Record<string, unknown>).id, "agent-a");
-
-    agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: 2 }));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await closeSocket(agentA.socket);
-    agentA = await connectAgent(port, createdA.agent.id, createdA.token);
-    await postJson(`http://127.0.0.1:${port}/api/groups/group-a/messages`, {
-      senderType: "human",
-      senderId: ownerA.id,
-      content: "Alpha replay message",
-    });
-    await postJson(`http://127.0.0.1:${port}/api/groups/group-b/messages`, {
-      senderType: "human",
-      senderId: ownerB.id,
-      content: "Beta replay message",
-    });
-    const replayAlpha = await agentA.waitFor((event) => event.type === "message" && event.content === "Alpha replay message");
-    const replayBeta = await agentA.waitFor((event) => event.type === "message" && event.content === "Beta replay message");
-    assert.equal(replayAlpha.seq, 3);
-    assert.equal(replayBeta.seq, 2);
-    assert.equal(store.getAgentAck(createdA.agent.id, groupA.id), 2);
-    assert.equal(store.getAgentAck(createdA.agent.id, groupB.id), 0);
+    agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-b", seq: 1 }));
+    assert.equal(agentB.events.some((event) => event.type === "message" && event.content === "Beta-only message"), false);
   } finally {
     if (agentA) await closeSocket(agentA.socket);
     if (agentB) await closeSocket(agentB.socket);

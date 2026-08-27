@@ -1,0 +1,22 @@
+services:
+  feedmob-group-platform:
+    image: ${PLATFORM_IMAGE:-ghcr.io/harukaon/feedmob-openclaw-group-platform:latest}
+    container_name: feedmob-group-platform
+    restart: unless-stopped
+    init: true
+    mem_limit: 384m
+    mem_reservation: 256m
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATABASE_FILE: /data/platform.sqlite
+    ports:
+      - "${PLATFORM_BIND_IP:-127.0.0.1}:18788:8787"
+    volumes:
+      - ./platform-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10

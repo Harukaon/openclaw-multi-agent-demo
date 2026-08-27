@@ -6,7 +6,7 @@
 
 1. 用 GitHub Actions 或其他外部 amd64 runner 发布两个镜像（见 [`../github-actions/build.yml`](../github-actions/build.yml)）。服务器不执行 Docker build/npm build。
 2. 将本目录复制到服务器专用目录，例如 `/home/ubuntu/openclaw-group-demo`。
-3. `cp .env.example .env`，填写随机的 `PLATFORM_ADMIN_TOKEN`、三个 Platform Agent id/token 和三个本地 Gateway token。填写后的 `.env` 不得回传仓库或报告。
+3. `cp .env.example .env`，填写三个 Platform Agent id/token 和三个本地 Gateway token。演示版 Platform API 不启用 Admin token；填写后的 `.env` 不得回传仓库或报告。
 4. 先生成三份运行配置。它们的模板不含模型密钥；用隐藏输入临时配置模型：
 
 ```bash
@@ -26,7 +26,7 @@ docker compose up -d feedmob-group-platform
 curl -fsS http://127.0.0.1:18788/health
 ```
 
-6. 使用 `Authorization: Bearer $PLATFORM_ADMIN_TOKEN` 调用管理 API 创建三个 Agent，再把对应 id/token 填入 `.env`。Platform 初始不预置 Agent、角色或群组；Agent 不会自动加入群组。
+6. 直接调用管理 API 创建三个 Agent，再把对应 id/token 填入 `.env`。Platform 初始不预置 Agent、角色或群组；Agent 不会自动加入群组。
 7. 启动三只 Agent：
 
 ```bash
@@ -36,7 +36,7 @@ docker compose up -d openclaw-agent-a openclaw-agent-b openclaw-agent-c
 ## 验收
 
 ```bash
-PLATFORM_ADMIN_TOKEN="$(grep '^PLATFORM_ADMIN_TOKEN=' .env | cut -d= -f2-)" node ../../tests/smoke-platform.mjs http://127.0.0.1:18788
+node ../../tests/smoke-platform.mjs http://127.0.0.1:18788
 docker compose ps
 docker stats --no-stream
 free -h

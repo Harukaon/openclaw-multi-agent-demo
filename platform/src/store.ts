@@ -443,6 +443,7 @@ export class Store {
     const content = input.content.trim();
     if (!content) throw new Error("content is required");
     const messageId = randomUUID();
+    const rootMessageId = input.rootMessageId ?? messageId;
     const now = new Date().toISOString();
     const members = this.getGroupMembers(input.groupId);
     const mentions = parseMentions(content, members);
@@ -470,7 +471,7 @@ export class Store {
           content,
           JSON.stringify(mentions),
           input.parentMessageId ?? null,
-          input.rootMessageId ?? null,
+          rootMessageId,
           input.depth ?? 0,
           now,
         );

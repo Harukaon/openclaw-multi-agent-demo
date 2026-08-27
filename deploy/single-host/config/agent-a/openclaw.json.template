@@ -4,6 +4,9 @@
     "bind": "lan",
     "auth": {
       "mode": "token"
+    },
+    "controlUi": {
+      "allowedOrigins": ["*"]
     }
   },
   "channels": {

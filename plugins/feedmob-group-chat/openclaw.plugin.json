@@ -25,11 +25,6 @@
           "token": {
             "type": "string",
             "description": "Platform Agent token"
-          },
-          "requireMention": {
-            "type": "boolean",
-            "description": "Only dispatch messages that directly mention this Agent",
-            "default": false
           }
         }
       }
@@ -55,11 +50,6 @@
       "token": {
         "type": "string",
         "description": "Platform Agent token"
-      },
-      "requireMention": {
-        "type": "boolean",
-        "description": "Only dispatch messages that directly mention this Agent",
-        "default": false
       }
     }
   }

@@ -1,15 +1,19 @@
-import express, { type Request, type Response } from "express";
+import express, { type Response } from "express";
+import { randomUUID } from "node:crypto";
 import { createServer, type Server as HttpServer } from "node:http";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { Store } from "./store.js";
 import { mentionStateFor } from "./mention.js";
+import { buildAgentContentForAgent } from "./agent-prompt.js";
 import type {
   AgentAck,
   AgentHello,
   AgentMessageEvent,
   AgentOutboundMessage,
+  AgentPipelineContext,
   Group,
   GroupMember,
+  MentionState,
   MemberType,
   Sender,
   StoredMessage,
@@ -19,6 +23,32 @@ import type {
 } from "./types.js";
 
 const CHANNEL_ID = "feedmob-group-chat";
+const configuredPipelineAckTimeout = Number(process.env.PIPELINE_ACK_TIMEOUT_MS || 120_000);
+const PIPELINE_ACK_TIMEOUT_MS = Number.isFinite(configuredPipelineAckTimeout) && configuredPipelineAckTimeout > 0
+  ? configuredPipelineAckTimeout
+  : 120_000;
+
+type PipelineTurn = {
+  turnId: string;
+  groupId: string;
+  rootMessageId: string;
+};
+
+type PipelineStep = PipelineTurn & {
+  agentId: string;
+  messageId: string;
+  step: number;
+  totalSteps: number;
+};
+
+type PipelineAckWaiter = {
+  agentId: string;
+  groupId: string;
+  messageId: string;
+  seq: number;
+  resolve: () => void;
+  timer: ReturnType<typeof setTimeout>;
+};
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -56,6 +86,15 @@ function parseMemberType(value: unknown): MemberType | undefined {
   return value === "human" || value === "agent" ? value : undefined;
 }
 
+function pipelineMentionState(agentId: string, conversation: readonly StoredMessage[]): MentionState {
+  const latest = conversation.at(-1);
+  if (latest?.sender.type === "agent" && latest.sender.id === agentId) return "SELF";
+  if (conversation.some((message) => message.mentions.some((mention) => mention.type === "agent" && mention.id === agentId))) {
+    return "DIRECT";
+  }
+  return conversation.some((message) => message.mentions.length > 0) ? "OTHER" : "NONE";
+}
+
 export class PlatformServer {
   readonly app = express();
   readonly httpServer: HttpServer;
@@ -64,11 +103,12 @@ export class PlatformServer {
   readonly agentSockets = new Map<string, WebSocket>();
   readonly userSockets = new Map<string, Set<WebSocket>>();
   readonly store: Store;
-  readonly adminToken: string | undefined;
+  private readonly pipelineQueues = new Map<string, Promise<void>>();
+  private readonly activePipelineSteps = new Map<string, PipelineStep>();
+  private readonly pipelineAckWaiters = new Map<string, PipelineAckWaiter>();
 
-  constructor(store = new Store(process.env.DATABASE_FILE || ":memory:"), adminToken = process.env.ADMIN_TOKEN) {
+  constructor(store = new Store(process.env.DATABASE_FILE || ":memory:")) {
     this.store = store;
-    this.adminToken = adminToken?.trim() || undefined;
     this.httpServer = createServer(this.app);
     this.configureHttp();
     this.configureWebSockets();
@@ -91,6 +131,11 @@ export class PlatformServer {
   }
 
   async stop(): Promise<void> {
+    for (const waiter of this.pipelineAckWaiters.values()) {
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+    this.pipelineAckWaiters.clear();
     const sockets = new Set<WebSocket>([...this.agentWss.clients, ...this.userWss.clients]);
     await Promise.all([...sockets].map((socket) => this.closeSocket(socket)));
     return new Promise((resolve, reject) => {
@@ -115,7 +160,7 @@ export class PlatformServer {
     this.app.use(express.json({ limit: "128kb" }));
     this.app.use((_req, res, next) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Headers", "authorization, content-type, x-admin-token, x-user-id");
+      res.setHeader("Access-Control-Allow-Headers", "content-type, x-user-id");
       res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
       if (_req.method === "OPTIONS") {
         res.status(204).end();
@@ -123,11 +168,6 @@ export class PlatformServer {
       }
       next();
     });
-    this.app.use("/api", (req, res, next) => {
-      if (req.method === "GET" || this.isAdmin(req)) return next();
-      return httpError(res, 401, "admin authentication required");
-    });
-
     this.app.get("/health", (_req, res) => {
       res.json({
         ok: true,
@@ -245,6 +285,7 @@ export class PlatformServer {
           parentMessageId: asString(req.body?.parentMessageId),
           rootMessageId: asString(req.body?.rootMessageId),
         });
+        if (sender.type === "human") this.enqueuePipeline(group, message);
         return res.status(201).json({ message });
       } catch (error) {
         return httpError(res, 409, error instanceof Error ? error.message : "message rejected");
@@ -272,15 +313,6 @@ export class PlatformServer {
     this.app.use((_req, res) => httpError(res, 404, "not found"));
   }
 
-  private isAdmin(req: Request): boolean {
-    const expected = this.adminToken;
-    if (!expected) return true;
-    const authorization = req.header("authorization") || "";
-    const bearer = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
-    const supplied = req.header("x-admin-token")?.trim() || bearer;
-    return supplied === expected;
-  }
-
   private configureWebSockets(): void {
     this.httpServer.on("upgrade", (request, socket, head) => {
       const pathname = new URL(request.url || "/", "http://localhost").pathname;
@@ -306,6 +338,7 @@ export class PlatformServer {
         if (agentId && this.agentSockets.get(agentId) === socket) {
           this.agentSockets.delete(agentId);
           this.store.setAgentConnection(agentId, false);
+          this.resolvePipelineWaitersForAgent(agentId);
         }
       });
       socket.on("error", () => undefined);
@@ -382,6 +415,7 @@ export class PlatformServer {
         return sendJson(socket, errorPayload("invalid_ack", "invalid group membership or sequence"));
       }
       this.store.ack({ agentId, groupId: ack.groupId, seq: ack.seq, messageId: ack.messageId });
+      this.resolvePipelineAck(agentId, ack.groupId, ack.messageId, ack.seq);
       return;
     }
     if (message.type === "agent.message") {
@@ -459,13 +493,14 @@ export class PlatformServer {
       }
       const user = this.store.getUser(userId);
       if (!user) return sendJson(socket, errorPayload("user_not_found", "user not found"));
-      this.appendAndBroadcast({
+      const createdMessage = this.appendAndBroadcast({
         groupId: group.id,
         sender: { type: "human", id: user.id, name: user.displayName },
         content: outbound.content,
         parentMessageId: outbound.parentMessageId,
         rootMessageId: outbound.rootMessageId,
       });
+      this.enqueuePipeline(group, createdMessage);
       return;
     }
     if (message.type === "ping") return sendJson(socket, { type: "pong", timestamp: Date.now() });
@@ -507,16 +542,79 @@ export class PlatformServer {
       if (!sockets) continue;
       for (const socket of sockets) sendJson(socket, humanEvent);
     }
-    for (const member of members.filter((item) => item.memberType === "agent")) {
-      const event = this.buildAgentEvent(member, group, message);
+  }
+
+  private enqueuePipeline(group: Group, rootMessage: StoredMessage): void {
+    const previous = this.pipelineQueues.get(group.id) || Promise.resolve();
+    const next = previous
+      .then(() => this.runPipeline(group, rootMessage))
+      .catch((error: unknown) => {
+        console.error(`[${CHANNEL_ID}] pipeline failed group=${group.id}: ${String(error)}`);
+      });
+    this.pipelineQueues.set(group.id, next);
+    void next.finally(() => {
+      if (this.pipelineQueues.get(group.id) === next) this.pipelineQueues.delete(group.id);
+    });
+  }
+
+  private async runPipeline(group: Group, rootMessage: StoredMessage): Promise<void> {
+    const agents = this.store.getGroupMembers(group.id).filter((member) => member.memberType === "agent");
+    const turn: PipelineTurn = {
+      turnId: randomUUID(),
+      groupId: group.id,
+      rootMessageId: rootMessage.rootMessageId || rootMessage.id,
+    };
+
+    for (const [index, member] of agents.entries()) {
+      const currentGroup = this.store.getGroup(group.id);
+      if (!currentGroup || currentGroup.status === "paused") return;
+      if (!this.store.isMember(group.id, "agent", member.memberId)) continue;
+
+      const conversation = this.store
+        .getMessages(group.id)
+        .filter((message) => message.rootMessageId === turn.rootMessageId);
+      const latest = conversation.at(-1) || rootMessage;
+      const step: PipelineStep = {
+        ...turn,
+        agentId: member.memberId,
+        messageId: latest.id,
+        step: index + 1,
+        totalSteps: agents.length,
+      };
       const socket = this.agentSockets.get(member.memberId);
-      if (!socket) {
-        this.store.markDeliveryResult(message.id, group.id, member.memberId, "queued");
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        this.store.markDeliveryResult(latest.id, group.id, member.memberId, "queued");
         continue;
       }
-      sendJson(socket, event);
-      this.store.markDelivered(message.id, group.id, member.memberId);
+
+      this.activePipelineSteps.set(group.id, step);
+      const acked = this.waitForPipelineAck(step);
+      this.sendPipelineStep(socket, member, currentGroup, latest, step, conversation);
+      await acked;
+      if (this.activePipelineSteps.get(group.id) === step) this.activePipelineSteps.delete(group.id);
     }
+  }
+
+  private sendPipelineStep(
+    socket: WebSocket,
+    member: GroupMember,
+    group: Group,
+    message: StoredMessage,
+    step: PipelineStep,
+    conversation: readonly StoredMessage[],
+  ): void {
+    const pipeline: AgentPipelineContext = {
+      turnId: step.turnId,
+      step: step.step,
+      totalSteps: step.totalSteps,
+      rootMessageId: step.rootMessageId,
+    };
+    sendJson(socket, this.buildAgentEvent(member, group, message, {
+      pipeline,
+      conversation,
+      mentionState: pipelineMentionState(member.memberId, conversation),
+    }));
+    this.store.markDelivered(message.id, group.id, member.memberId);
   }
 
   private sendMessageToAgent(agentId: string, message: StoredMessage): void {
@@ -524,12 +622,25 @@ export class PlatformServer {
     const member = this.store.getGroupMembers(message.groupId).find((item) => item.memberType === "agent" && item.memberId === agentId);
     const socket = this.agentSockets.get(agentId);
     if (!group || !member || !socket) return;
+    const active = this.activePipelineSteps.get(group.id);
+    if (active?.agentId === agentId && active.messageId === message.id) {
+      const conversation = this.store
+        .getMessages(group.id)
+        .filter((item) => item.rootMessageId === active.rootMessageId);
+      this.sendPipelineStep(socket, member, group, message, active, conversation);
+      return;
+    }
     sendJson(socket, this.buildAgentEvent(member, group, message));
     this.store.markDelivered(message.id, group.id, agentId);
   }
 
-  private buildAgentEvent(member: GroupMember, group: Group, message: StoredMessage): AgentMessageEvent {
-    const mentionState = mentionStateFor(message.sender.type, message.sender.id, member.memberId, message.mentions);
+  private buildAgentEvent(
+    member: GroupMember,
+    group: Group,
+    message: StoredMessage,
+    options: { pipeline?: AgentPipelineContext; conversation?: readonly StoredMessage[]; mentionState?: MentionState } = {},
+  ): AgentMessageEvent {
+    const mentionState = options.mentionState ?? mentionStateFor(message.sender.type, message.sender.id, member.memberId, message.mentions);
     return {
       type: "message",
       group: { id: group.id, name: group.name },
@@ -537,6 +648,15 @@ export class PlatformServer {
       messageId: message.id,
       sender: message.sender,
       content: message.content,
+      contentForAgent: buildAgentContentForAgent({
+        agent: { id: member.memberId, displayName: member.displayName },
+        group,
+        sender: message.sender,
+        content: message.content,
+        mentionState,
+        pipeline: options.pipeline,
+        conversation: options.conversation,
+      }),
       mentions: message.mentions,
       parentMessageId: message.parentMessageId,
       rootMessageId: message.rootMessageId,
@@ -547,8 +667,50 @@ export class PlatformServer {
         groupName: group.name,
         mentionState,
         selfMessage: mentionState === "SELF",
+        pipeline: options.pipeline,
       },
     };
+  }
+
+  private waitForPipelineAck(step: PipelineStep): Promise<void> {
+    const key = this.pipelineAckKey(step.agentId, step.groupId, step.messageId);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pipelineAckWaiters.delete(key);
+        resolve();
+      }, PIPELINE_ACK_TIMEOUT_MS);
+      this.pipelineAckWaiters.set(key, {
+        agentId: step.agentId,
+        groupId: step.groupId,
+        messageId: step.messageId,
+        seq: this.store.getMessages(step.groupId).find((message) => message.id === step.messageId)?.seq || 0,
+        resolve,
+        timer,
+      });
+    });
+  }
+
+  private resolvePipelineAck(agentId: string, groupId: string, messageId: string | undefined, seq: number): void {
+    for (const [key, waiter] of this.pipelineAckWaiters) {
+      if (waiter.agentId !== agentId || waiter.groupId !== groupId) continue;
+      if (messageId ? waiter.messageId !== messageId : waiter.seq > seq) continue;
+      clearTimeout(waiter.timer);
+      this.pipelineAckWaiters.delete(key);
+      waiter.resolve();
+    }
+  }
+
+  private resolvePipelineWaitersForAgent(agentId: string): void {
+    for (const [key, waiter] of this.pipelineAckWaiters) {
+      if (waiter.agentId !== agentId) continue;
+      clearTimeout(waiter.timer);
+      this.pipelineAckWaiters.delete(key);
+      waiter.resolve();
+    }
+  }
+
+  private pipelineAckKey(agentId: string, groupId: string, messageId: string): string {
+    return `${agentId}:${groupId}:${messageId}`;
   }
 
   private resolveSender(type: MemberType, id: string): Sender | null {
