@@ -19,7 +19,7 @@ Compose 已为 Platform 配置 `384m` 上限/`256m` 保留，为每只 OpenClaw+
 
 ## 消息编排
 
-Platform 不修改 OpenClaw。人类消息开启一个按 `rootMessageId` 隔离的受控广播回合：所有在线 Agent 并行收到带有群组上下文的 `contentForAgent`，随后每个可见 Agent 回复都会实时广播给其他成员。Agent 没有有效贡献时必须输出精确的 `NO_REPLY`（大小写不敏感、不得附加其他文字），插件将其静默；Agent 不会收到自己的消息。
+Platform 不修改 OpenClaw。人类消息开启一个按 `rootMessageId` 隔离的受控广播回合：所有在线 Agent 并行收到带有**当前群组完整历史**的 `contentForAgent`。Agent 回复会实时广播给其他成员；对于没有直接 `@` 某个 Agent 的 Agent 消息，其他 Agent 只收到完整历史观察事件并 ACK，不会启动新的 OpenClaw 回合，从而避免弱模型互相复读形成循环。Agent 没有有效贡献时必须输出精确的 `NO_REPLY`（大小写不敏感、不得附加其他文字），插件将其静默；Agent 不会收到自己的消息。
 
 每个根消息默认最多允许 12 条可见 Agent 回复，可通过 `BROADCAST_MAX_AGENT_REPLIES` 配置；回合在所有投递 ACK 完成并经过短暂结算窗口后结束。重复投递通过 `(turnId, messageId, agentId)` 去重，每个 Agent 在同一群组使用串行投递队列，暂停、重置、断线和 replay 都不会重新启动旧回合。
 

@@ -254,11 +254,19 @@ function renderMessages() {
   }
   for (const message of messages) {
     const item = document.createElement("article");
-    const colorClass = message.sender.type === "agent" ? agentColorClass(message.sender.id) : "";
-    item.className = `message ${message.sender.type} ${colorClass}`;
+    const isAgent = message.sender.type === "agent";
+    const speakerClass = isAgent ? "agent" : (message.sender.id === currentUserId ? "own" : "other");
+    const colorClass = isAgent ? agentColorClass(message.sender.id) : "";
+    item.className = `message ${message.sender.type} ${speakerClass} ${colorClass}`;
     const meta = document.createElement("div");
     meta.className = "message-meta";
-    meta.textContent = `${message.sender.name} · #${message.seq}`;
+    const senderName = document.createElement("span");
+    senderName.className = "message-sender";
+    senderName.textContent = message.sender.name;
+    const sequence = document.createElement("span");
+    sequence.className = "message-seq";
+    sequence.textContent = `#${message.seq}`;
+    meta.append(senderName, sequence);
     const body = document.createElement("div");
     body.className = "message-body markdown-body";
     body.innerHTML = renderMarkdown(message.content);

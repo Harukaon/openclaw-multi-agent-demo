@@ -64,6 +64,7 @@ test("Agent prompt injection preserves the message and explains each mention sta
 
   const none = buildAgentContentForAgent({ ...base, mentionState: "NONE" });
   assert.match(none, /Mention State: NONE/);
+  assert.match(none, /本消息没有 @ 你/);
   assert.match(none, /没有 @ 任何群成员/);
 
   const self = buildAgentContentForAgent({ ...base, mentionState: "SELF" });
@@ -295,6 +296,11 @@ test("Platform broadcasts live context with loop and group isolation guards", as
     store.addMember({ groupId: groupA.id, memberType: "agent", memberId: createdA.agent.id });
     store.addMember({ groupId: groupA.id, memberType: "agent", memberId: createdB.agent.id });
     store.addMember({ groupId: groupB.id, memberType: "agent", memberId: createdA.agent.id });
+    store.appendMessage({
+      groupId: groupA.id,
+      sender: { type: "human", id: ownerA.id, name: ownerA.displayName },
+      content: "Earlier human turn: Agent A already answered pong",
+    });
 
     await server.listen(0, "127.0.0.1");
     const address = server.httpServer.address();
@@ -318,6 +324,7 @@ test("Platform broadcasts live context with loop and group isolation guards", as
     assert.match(String(firstForA.contentForAgent), /Mention State: DIRECT/);
     assert.match(String(firstForB.contentForAgent), /Mention State: OTHER/);
     assert.match(String(firstForB.contentForAgent), /Visible Agent replies so far: 0\/12/);
+    assert.match(String(firstForB.contentForAgent), /Earlier human turn: Agent A already answered pong/);
     agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: firstForA.seq, messageId: firstForA.messageId }));
     agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: firstForB.seq, messageId: firstForB.messageId }));
 
@@ -335,7 +342,9 @@ test("Platform broadcasts live context with loop and group isolation guards", as
     const fromAForB = await agentB.waitFor((event) => event.type === "message" && event.content === "Agent A reply");
     assert.equal(agentA.events.some((event) => event.type === "message" && event.content === "Agent A reply"), false);
     assert.equal((fromAForB.sender as Record<string, unknown>).id, "agent-a");
+    assert.equal((fromAForB.deliveryContext as Record<string, unknown>).observation, true);
     assert.match(String(fromAForB.contentForAgent), /@agent-a Please analyze this/);
+    assert.match(String(fromAForB.contentForAgent), /Agent A reply/);
 
     agentB.socket.send(JSON.stringify({
       type: "agent.message",
@@ -349,6 +358,8 @@ test("Platform broadcasts live context with loop and group isolation guards", as
     await agentB.waitFor((event) => event.type === "message.accepted" && event.clientMessageId === "reply-b");
     const fromBForA = await agentA.waitFor((event) => event.type === "message" && event.content === "Agent B reply");
     assert.equal((fromBForA.sender as Record<string, unknown>).id, "agent-b");
+    assert.equal((fromBForA.deliveryContext as Record<string, unknown>).observation, true);
+    assert.match(String(fromBForA.contentForAgent), /@agent-a Please analyze this/);
     assert.match(String(fromBForA.contentForAgent), /Agent A reply/);
     assert.match(String(fromBForA.contentForAgent), /Visible Agent replies so far: 2\/12/);
     agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: fromAForB.seq, messageId: fromAForB.messageId }));

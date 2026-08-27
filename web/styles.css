@@ -96,8 +96,13 @@ button:disabled, input:disabled, select:disabled { opacity: .45; cursor: not-all
 .messages { display: flex; flex-direction: column; gap: 13px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 8px 38px 28px; }
 .empty { display: grid; place-items: center; min-height: 280px; color: #657692; font-size: 13px; }
 .message { align-self: flex-start; max-width: min(700px, 84%); padding: 12px 15px; border: 1px solid #263653; border-radius: 5px 15px 15px 15px; background: var(--panel-2); }
-.message.human { align-self: flex-end; border-color: #285aa5; border-radius: 15px 5px 15px 15px; background: #174681; }
-.message-meta { display: flex; gap: 9px; margin-bottom: 6px; color: #8bbaf5; font-size: 11px; font-weight: 750; }
+.message.human.other { border-color: #35445b; background: #172236; }
+.message.human.own { align-self: flex-end; border-color: #285aa5; border-radius: 15px 5px 15px 15px; background: #174681; }
+.message.agent { border-style: dashed; border-color: #53617a; background: #111a2a; }
+.message-meta { display: flex; gap: 9px; margin-bottom: 6px; color: #71809c; font-size: 11px; font-weight: 750; }
+.message-sender { color: #b8c5d9; }
+.message.human.own .message-sender { color: #b9d8ff; }
+.message-seq { color: #687791; font-size: 10px; font-weight: 600; }
 .message-body { color: #e7eefb; word-break: break-word; line-height: 1.55; }
 .markdown-body > :first-child { margin-top: 0; }
 .markdown-body > :last-child { margin-bottom: 0; }
@@ -110,12 +115,12 @@ button:disabled, input:disabled, select:disabled { opacity: .45; cursor: not-all
 .markdown-body code { border-radius: 4px; color: #b9d8ff; background: #0b1c35; padding: 2px 5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
 .markdown-body pre code { border: 0; color: #d8e6ff; background: transparent; padding: 0; white-space: pre; }
 .markdown-body a { color: #8fc4ff; text-decoration: underline; }.markdown-body hr { border: 0; border-top: 1px solid #2a3e5e; margin: 4px 0 12px; }
-.message.agent-color-0 { border-color: #2e5f9b; background: #122b4a; }.message.agent-color-0 .message-meta { color: #78b8ff; }
-.message.agent-color-1 { border-color: #704e9f; background: #281d42; }.message.agent-color-1 .message-meta { color: #c1a0ff; }
-.message.agent-color-2 { border-color: #287b70; background: #123b3b; }.message.agent-color-2 .message-meta { color: #72d6c6; }
-.message.agent-color-3 { border-color: #966630; background: #3a2917; }.message.agent-color-3 .message-meta { color: #f2c47a; }
-.message.agent-color-4 { border-color: #9b4664; background: #3e1d31; }.message.agent-color-4 .message-meta { color: #f69bbc; }
-.message.agent-color-5 { border-color: #486a3c; background: #20351f; }.message.agent-color-5 .message-meta { color: #a7df8d; }
+.message.agent-color-0 .message-sender { color: #83b8ee; }
+.message.agent-color-1 .message-sender { color: #b89ce6; }
+.message.agent-color-2 .message-sender { color: #77c5bb; }
+.message.agent-color-3 .message-sender { color: #d7ad76; }
+.message.agent-color-4 .message-sender { color: #d58fa9; }
+.message.agent-color-5 .message-sender { color: #a8ce96; }
 .composer { padding: 13px 38px 28px; border-top: 1px solid var(--border); background: #0a1222aa; }
 .mention-bar { display: flex; flex-wrap: wrap; gap: 6px; min-height: 0; margin-bottom: 7px; }
 .mention-chip { border: 1px solid #2e4e7d; border-radius: 999px; color: #a9cdfb; background: #122645; padding: 4px 9px; font-size: 11px; cursor: pointer; }
