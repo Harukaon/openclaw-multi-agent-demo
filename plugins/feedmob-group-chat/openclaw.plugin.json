@@ -3,6 +3,38 @@
   "name": "FeedMob Group Chat",
   "description": "A group-scoped multi-Agent chat channel backed by the FeedMob demo platform.",
   "channels": ["feedmob-group-chat"],
+  "channelConfigs": {
+    "feedmob-group-chat": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "serverUrl": {
+            "type": "string",
+            "description": "FeedMob Group Server base URL"
+          },
+          "agentId": {
+            "type": "string",
+            "description": "Platform Agent id"
+          },
+          "openclawAgentId": {
+            "type": "string",
+            "description": "Local OpenClaw Agent id used for route resolution",
+            "default": "main"
+          },
+          "token": {
+            "type": "string",
+            "description": "Platform Agent token"
+          },
+          "requireMention": {
+            "type": "boolean",
+            "description": "Only dispatch messages that directly mention this Agent",
+            "default": false
+          }
+        }
+      }
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
