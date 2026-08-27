@@ -121,6 +121,11 @@ export interface UserMessageEvent extends Omit<AgentMessageEvent, "deliveryConte
   deliveryContext?: DeliveryContext;
 }
 
+export interface UserGroupsUpdatedEvent {
+  type: "groups.updated";
+  groups: Group[];
+}
+
 export interface AgentHello {
   type: "hello";
   agentId: string;

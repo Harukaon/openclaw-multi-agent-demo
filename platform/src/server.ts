@@ -1,4 +1,4 @@
-import express, { type Response } from "express";
+import express, { type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
 import { createServer, type Server as HttpServer } from "node:http";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
@@ -19,6 +19,7 @@ import type {
   BroadcastStatusEvent,
   Sender,
   StoredMessage,
+  UserGroupsUpdatedEvent,
   UserHello,
   UserMessageEvent,
   UserOutboundMessage,
@@ -171,6 +172,15 @@ export class PlatformServer {
     });
   }
 
+  private canUserSeeGroup(req: Request, res: Response, group: Group): boolean {
+    const userId = asString(req.get("x-user-id")) || asString(req.query.userId);
+    if (!userId || !this.store.getUser(userId) || !this.store.isMember(group.id, "human", userId)) {
+      httpError(res, 404, "group not found");
+      return false;
+    }
+    return true;
+  }
+
   private configureHttp(): void {
     this.app.disable("x-powered-by");
     this.app.use(express.json({ limit: "128kb" }));
@@ -195,6 +205,18 @@ export class PlatformServer {
     });
 
     this.app.get("/api/users", (_req, res) => res.json({ users: this.store.listUsers() }));
+    this.app.post("/api/login", (req, res) => {
+      try {
+        const username = asString(req.body?.username);
+        if (!username || !/^[\p{L}\p{N}_.-]{1,32}$/u.test(username)) {
+          return httpError(res, 400, "username must be 1-32 letters, numbers, dot, underscore or hyphen");
+        }
+        const user = this.store.getUserByUsername(username) || this.store.createUser({ username, displayName: username });
+        return res.json({ user });
+      } catch (error) {
+        return httpError(res, 409, error instanceof Error ? error.message : "login failed");
+      }
+    });
     this.app.post("/api/users", (req, res) => {
       try {
         const username = asString(req.body?.username);
@@ -235,13 +257,15 @@ export class PlatformServer {
         const ownerId = asString(req.body?.ownerId);
         if (!name || !ownerId) return httpError(res, 400, "name and ownerId are required");
         if (!this.store.getUser(ownerId)) return httpError(res, 404, "owner user not found");
-        return res.status(201).json({ group: this.store.createGroup({ id: asString(req.body?.id), name, ownerId }) });
+        const group = this.store.createGroup({ id: asString(req.body?.id), name, ownerId });
+        this.publishGroupsUpdated([ownerId]);
+        return res.status(201).json({ group });
       } catch (error) {
         return httpError(res, 409, error instanceof Error ? error.message : "group creation failed");
       }
     });
     this.app.get("/api/groups", (req, res) => {
-      const userId = asString(req.query.userId);
+      const userId = asString(req.get("x-user-id")) || asString(req.query.userId);
       if (!userId) return httpError(res, 400, "userId is required");
       if (!this.store.getUser(userId)) return httpError(res, 404, "user not found");
       return res.json({ groups: this.store.listGroupsForUser(userId) });
@@ -249,11 +273,13 @@ export class PlatformServer {
     this.app.get("/api/groups/:groupId", (req, res) => {
       const group = this.store.getGroup(req.params.groupId);
       if (!group) return httpError(res, 404, "group not found");
+      if (!this.canUserSeeGroup(req, res, group)) return;
       return res.json({ group, members: this.store.getGroupMembers(group.id) });
     });
     this.app.get("/api/groups/:groupId/messages", (req, res) => {
       const group = this.store.getGroup(req.params.groupId);
       if (!group) return httpError(res, 404, "group not found");
+      if (!this.canUserSeeGroup(req, res, group)) return;
       const afterSeq = Number(req.query.afterSeq || 0);
       return res.json({ messages: this.store.getMessages(group.id, Number.isFinite(afterSeq) ? afterSeq : 0) });
     });
@@ -269,6 +295,7 @@ export class PlatformServer {
       if (memberType === "human" && !this.store.getUser(memberId)) return httpError(res, 404, "user not found");
       if (memberType === "agent" && !this.store.getAgent(memberId)) return httpError(res, 404, "agent not found");
       this.store.addMember({ groupId: group.id, memberType, memberId });
+      this.publishGroupsUpdated([group.ownerId, ...(memberType === "human" ? [memberId] : [])]);
       return res.status(201).json({ members: this.store.getGroupMembers(group.id) });
     });
     this.app.delete("/api/groups/:groupId/members/:memberType/:memberId", (req, res) => {
@@ -279,6 +306,7 @@ export class PlatformServer {
       if (!actorId || actorId !== group.ownerId) return httpError(res, 403, "only the group owner may change membership");
       if (!memberType) return httpError(res, 400, "invalid memberType");
       this.store.removeMember(group.id, memberType, req.params.memberId);
+      this.publishGroupsUpdated([group.ownerId, ...(memberType === "human" ? [req.params.memberId] : [])]);
       return res.status(204).end();
     });
 
@@ -562,6 +590,16 @@ export class PlatformServer {
     this.broadcastMessage(group, message);
     if (message.sender.type === "agent") this.broadcastAgentMessage(group, message);
     return message;
+  }
+
+  private publishGroupsUpdated(userIds: Iterable<string>): void {
+    for (const userId of new Set(userIds)) {
+      const sockets = this.userSockets.get(userId);
+      if (!sockets) continue;
+      const groups = this.store.listGroupsForUser(userId);
+      const event: UserGroupsUpdatedEvent = { type: "groups.updated", groups };
+      for (const socket of sockets) sendJson(socket, event);
+    }
   }
 
   private broadcastMessage(group: Group, message: StoredMessage): void {

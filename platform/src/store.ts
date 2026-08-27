@@ -283,6 +283,11 @@ export class Store {
     return row ? toUser(row) : null;
   }
 
+  getUserByUsername(username: string): User | null {
+    const row = this.db.prepare("SELECT * FROM users WHERE username = ?").get(username.trim().toLowerCase()) as UserRow | undefined;
+    return row ? toUser(row) : null;
+  }
+
   listUsers(): User[] {
     const rows = this.db.prepare("SELECT * FROM users ORDER BY created_at, id").all() as UserRow[];
     return rows.map(toUser);

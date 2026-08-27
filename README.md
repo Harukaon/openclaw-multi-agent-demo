@@ -25,6 +25,12 @@ Platform 不修改 OpenClaw。人类消息开启一个按 `rootMessageId` 隔离
 
 Platform 向用户 WebSocket 推送 `broadcast.status`：状态栏显示并发回复 Agent、每个 Agent 的决策状态和 `已回复/最大回复数` 预算。用户连接的 `hello.ok` 也会带上各群最新 `broadcastStatuses`，刷新页面不会丢失状态。
 
+## Web 端进入方式
+
+打开群聊页面后必须先输入用户名进入，不再默认使用 Leo，也没有用户下拉切换。已存在的用户名会恢复同一用户身份；首次输入的新用户名会创建一个演示用户，因此 Leo、Wendy 可以在不同浏览器/标签页同时在线。用户名登录是演示身份声明，不是密码认证；生产环境仍需接入真正的认证系统。
+
+Platform 会按当前用户过滤群组列表，并对群组详情和消息接口再次校验 human 成员关系；未被邀请的用户收到 404，不会获得群成员和历史消息。消息正文支持安全的 Markdown 渲染，Agent A/B/C 使用不同颜色区分。
+
 ## 关键约束
 
 - 不在 feedmob2/feedmob3 上构建 Docker 镜像或编译项目。

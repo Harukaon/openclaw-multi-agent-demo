@@ -71,6 +71,57 @@ test("Agent prompt injection preserves the message and explains each mention sta
   assert.match(self, /由你自己发出/);
 });
 
+test("username login is stable and group details stay private to members", async () => {
+  const store = new Store();
+  const server = new PlatformServer(store);
+  try {
+    await server.listen(0, "127.0.0.1");
+    const address = server.httpServer.address();
+    assert.ok(address && typeof address === "object");
+    const base = `http://127.0.0.1:${address.port}`;
+    const login = async (username: string) => {
+      const response = await fetch(`${base}/api/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username }),
+      });
+      assert.equal(response.status, 200);
+      return (await response.json()).user as { id: string; username: string; displayName: string };
+    };
+    const leo = await login("Leo");
+    const sameLeo = await login("leo");
+    const wendy = await login("Wendy");
+    assert.equal(sameLeo.id, leo.id);
+    assert.equal(leo.username, "leo");
+    assert.equal(leo.displayName, "Leo");
+
+    const groupResponse = await fetch(`${base}/api/groups`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-user-id": leo.id },
+      body: JSON.stringify({ name: "Leo private group", ownerId: leo.id }),
+    });
+    assert.equal(groupResponse.status, 201);
+    const group = (await groupResponse.json()).group as { id: string };
+    const posted = await fetch(`${base}/api/groups/${group.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-user-id": leo.id },
+      body: JSON.stringify({ senderType: "human", senderId: leo.id, content: "private **note**" }),
+    });
+    assert.equal(posted.status, 201);
+    const postedMessage = (await posted.json()).message as { sender: { name: string } };
+    assert.equal(postedMessage.sender.name, "Leo");
+
+    const visible = await fetch(`${base}/api/groups/${group.id}`, { headers: { "x-user-id": leo.id } });
+    assert.equal(visible.status, 200);
+    const hidden = await fetch(`${base}/api/groups/${group.id}`, { headers: { "x-user-id": wendy.id } });
+    assert.equal(hidden.status, 404);
+    const hiddenMessages = await fetch(`${base}/api/groups/${group.id}/messages`, { headers: { "x-user-id": wendy.id } });
+    assert.equal(hiddenMessages.status, 404);
+  } finally {
+    await server.stop().catch(() => undefined);
+  }
+});
+
 test("demo REST mutations are available without an admin token", async () => {
   const store = new Store();
   const server = new PlatformServer(store);

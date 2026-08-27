@@ -1,7 +1,12 @@
 const PLATFORM_ORIGIN = "https://groupchat-test.feedmob.it.com";
 const PLATFORM_WS = PLATFORM_ORIGIN.replace(/^http/, "ws");
 
-const userSelect = document.querySelector("#user-select");
+const loginGate = document.querySelector("#login-gate");
+const loginForm = document.querySelector("#login-form");
+const loginUsernameInput = document.querySelector("#login-username");
+const loginFeedback = document.querySelector("#login-feedback");
+const currentUserNameEl = document.querySelector("#current-user-name");
+const logoutButton = document.querySelector("#logout");
 const groupList = document.querySelector("#group-list");
 const refreshButton = document.querySelector("#refresh");
 const connectButton = document.querySelector("#connect");
@@ -20,6 +25,8 @@ const memberCountEl = document.querySelector("#member-count");
 const mentionBar = document.querySelector("#mention-bar");
 const groupCreateForm = document.querySelector("#group-create-form");
 const groupNameInput = document.querySelector("#group-name");
+const humanInviteForm = document.querySelector("#human-invite-form");
+const humanUsernameInput = document.querySelector("#human-username");
 const agentInviteForm = document.querySelector("#agent-invite-form");
 const agentSelect = document.querySelector("#agent-select");
 const manageFeedback = document.querySelector("#manage-feedback");
@@ -28,7 +35,8 @@ const contentInput = document.querySelector("#content");
 const sendButton = composer.querySelector("button");
 
 let socket;
-let currentUserId = new URLSearchParams(window.location.search).get("user") || "";
+let currentUserId = "";
+let currentUser = null;
 let groups = [];
 let members = [];
 let agents = [];
@@ -94,7 +102,11 @@ function renderBroadcastStatus() {
 async function api(path, options = {}) {
   const response = await fetch(`${PLATFORM_ORIGIN}${path}`, {
     ...options,
-    headers: { "content-type": "application/json", ...(options.headers || {}) },
+    headers: {
+      "content-type": "application/json",
+      ...(currentUserId ? { "x-user-id": currentUserId } : {}),
+      ...(options.headers || {}),
+    },
   });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
@@ -109,6 +121,131 @@ function showEmpty(text = "暂无消息") {
   messagesEl.append(empty);
 }
 
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character]);
+}
+
+function renderInlineMarkdown(value) {
+  const tokens = [];
+  const stash = (html) => {
+    const token = `@@FEEDMOBMD${tokens.length}@@`;
+    tokens.push(html);
+    return token;
+  };
+  let text = String(value);
+  text = text.replace(/`([^`\n]+)`/g, (_match, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  text = text.replace(/\[([^]\n]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)\)/gi, (_match, label, url) => (
+    stash(`<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`)
+  ));
+  text = escapeHtml(text)
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_\n]+)__/g, "<strong>$1</strong>")
+    .replace(/~~([^~\n]+)~~/g, "<del>$1</del>")
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
+    .replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>")
+    .replace(/\n/g, "<br>");
+  return text.replace(/@@FEEDMOBMD(\d+)@@/g, (_match, index) => tokens[Number(index)] || "");
+}
+
+function renderMarkdown(markdown) {
+  const lines = String(markdown).replace(/\r\n?/g, "\n").split("\n");
+  const output = [];
+  let paragraph = [];
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    output.push(`<p>${renderInlineMarkdown(paragraph.join("\n"))}</p>`);
+    paragraph = [];
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const fence = line.match(/^\s*```([\w+-]*)\s*$/);
+    if (fence) {
+      flushParagraph();
+      const code = [];
+      index += 1;
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+        code.push(lines[index]);
+        index += 1;
+      }
+      const language = fence[1] ? ` class="language-${escapeHtml(fence[1])}"` : "";
+      output.push(`<pre><code${language}>${escapeHtml(code.join("\n"))}</code></pre>`);
+      continue;
+    }
+    const heading = line.match(/^\s*(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      flushParagraph();
+      const level = heading[1].length;
+      output.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+    if (/^\s*(---+|\*\s*\*\s*\*)\s*$/.test(line)) {
+      flushParagraph();
+      output.push("<hr>");
+      continue;
+    }
+    if (/^\s*>/.test(line)) {
+      flushParagraph();
+      const quote = [];
+      while (index < lines.length && /^\s*>/.test(lines[index])) {
+        quote.push(lines[index].replace(/^\s*>\s?/, ""));
+        index += 1;
+      }
+      index -= 1;
+      output.push(`<blockquote>${renderInlineMarkdown(quote.join("\n"))}</blockquote>`);
+      continue;
+    }
+    const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
+    if (unordered) {
+      flushParagraph();
+      const items = [];
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*[-*+]\s+(.+)$/);
+        if (!item) break;
+        items.push(`<li>${renderInlineMarkdown(item[1])}</li>`);
+        index += 1;
+      }
+      index -= 1;
+      output.push(`<ul>${items.join("")}</ul>`);
+      continue;
+    }
+    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      flushParagraph();
+      const items = [];
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*\d+[.)]\s+(.+)$/);
+        if (!item) break;
+        items.push(`<li>${renderInlineMarkdown(item[1])}</li>`);
+        index += 1;
+      }
+      index -= 1;
+      output.push(`<ol>${items.join("")}</ol>`);
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      continue;
+    }
+    paragraph.push(line);
+  }
+  flushParagraph();
+  return output.join("");
+}
+
+const explicitAgentColors = { "agent-a": 0, "agent-b": 1, "agent-c": 2 };
+function agentColorClass(agentId) {
+  if (explicitAgentColors[agentId] !== undefined) return `agent-color-${explicitAgentColors[agentId]}`;
+  let hash = 0;
+  for (const character of String(agentId)) hash = ((hash << 5) - hash) + character.charCodeAt(0);
+  return `agent-color-${Math.abs(hash) % 6}`;
+}
+
 function renderMessages() {
   messagesEl.replaceChildren();
   if (!messages.length) {
@@ -117,13 +254,14 @@ function renderMessages() {
   }
   for (const message of messages) {
     const item = document.createElement("article");
-    item.className = `message ${message.sender.type}`;
+    const colorClass = message.sender.type === "agent" ? agentColorClass(message.sender.id) : "";
+    item.className = `message ${message.sender.type} ${colorClass}`;
     const meta = document.createElement("div");
     meta.className = "message-meta";
     meta.textContent = `${message.sender.name} · #${message.seq}`;
     const body = document.createElement("div");
-    body.className = "message-body";
-    body.textContent = message.content;
+    body.className = "message-body markdown-body";
+    body.innerHTML = renderMarkdown(message.content);
     item.append(meta, body);
     messagesEl.append(item);
   }
@@ -195,9 +333,11 @@ function renderAgentChoices() {
       agentSelect.append(option);
     }
   }
-  const canManage = Boolean(activeGroup && activeGroup.ownerId === currentUserId && available.length);
-  agentSelect.disabled = !canManage;
-  agentInviteForm.querySelector("button").disabled = !canManage;
+  const canManage = Boolean(activeGroup && activeGroup.ownerId === currentUserId);
+  agentSelect.disabled = !canManage || !available.length;
+  agentInviteForm.querySelector("button").disabled = !canManage || !available.length;
+  humanUsernameInput.disabled = !canManage;
+  humanInviteForm.querySelector("button").disabled = !canManage;
 }
 
 function renderMembers() {
@@ -209,7 +349,8 @@ function renderMembers() {
     const row = document.createElement("div");
     row.className = "member";
     const avatar = document.createElement("span");
-    avatar.className = `avatar ${member.memberType}`;
+    const colorClass = member.memberType === "agent" ? agentColorClass(member.memberId) : "";
+    avatar.className = `avatar ${member.memberType} ${colorClass}`;
     avatar.textContent = member.memberType === "agent" ? "AI" : "人";
     const text = document.createElement("div");
     const name = document.createElement("span");
@@ -237,26 +378,59 @@ function renderMembers() {
   renderAgentChoices();
 }
 
-async function loadUsers() {
+function resetWorkspace() {
+  groups = [];
+  members = [];
+  messages = [];
+  activeGroup = null;
+  selectedGroupId = "";
+  broadcastStatuses = new Map();
+  renderGroups();
+  renderBroadcastStatus();
+  renderMembers();
+  titleEl.textContent = "选择一个群组";
+  subtitleEl.textContent = "输入用户名后开始群聊";
+  contentInput.disabled = true;
+  sendButton.disabled = true;
+  refreshButton.disabled = true;
+  groupCreateForm.querySelector("button").disabled = true;
+  humanInviteForm.querySelector("button").disabled = true;
+  humanUsernameInput.disabled = true;
+}
+
+async function login(username) {
+  loginFeedback.textContent = "正在进入…";
   try {
-    const payload = await api("/api/users");
-    userSelect.replaceChildren();
-    for (const user of payload.users || []) {
-      const option = document.createElement("option");
-      option.value = user.id;
-      option.textContent = `${user.displayName}（${user.username}）`;
-      userSelect.append(option);
-    }
-    if (!currentUserId || !payload.users.some((user) => user.id === currentUserId)) currentUserId = payload.users[0]?.id || "";
-    if (currentUserId) userSelect.value = currentUserId;
-    userSelect.disabled = !currentUserId;
-    connectButton.disabled = !currentUserId;
-    groupCreateForm.querySelector("button").disabled = !currentUserId;
-    if (!currentUserId) showEmpty("暂无用户，请先通过 Platform API 创建演示用户");
+    const payload = await api("/api/login", {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    });
+    currentUser = payload.user;
+    currentUserId = currentUser.id;
+    currentUserNameEl.textContent = `${currentUser.displayName}（${currentUser.username}）`;
+    loginGate.hidden = true;
+    loginFeedback.textContent = "";
+    connectButton.disabled = false;
+    groupCreateForm.querySelector("button").disabled = false;
+    await loadAgents();
+    connect();
   } catch (error) {
-    setStatus("Platform 不可用");
-    showEmpty(`无法连接 Platform：${error.message}`);
+    loginFeedback.textContent = `无法进入：${error.message}`;
   }
+}
+
+function logout() {
+  socket?.close();
+  socket = undefined;
+  currentUser = null;
+  currentUserId = "";
+  resetWorkspace();
+  currentUserNameEl.textContent = "未登录";
+  setStatus("请先输入用户名");
+  loginGate.hidden = false;
+  loginUsernameInput.value = "";
+  loginFeedback.textContent = "";
+  loginUsernameInput.focus();
 }
 
 async function loadAgents() {
@@ -298,13 +472,17 @@ async function selectGroup(groupId) {
 }
 
 function connect() {
-  currentUserId = userSelect.value;
   if (!currentUserId) return;
+  const userIdForSocket = currentUserId;
   socket?.close();
   setStatus("连接中…");
-  socket = new WebSocket(`${PLATFORM_WS}/ws/user`);
-  socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", userId: currentUserId })));
-  socket.addEventListener("message", (event) => {
+  const userSocket = new WebSocket(`${PLATFORM_WS}/ws/user`);
+  socket = userSocket;
+  userSocket.addEventListener("open", () => {
+    if (currentUserId === userIdForSocket) userSocket.send(JSON.stringify({ type: "hello", userId: userIdForSocket }));
+  });
+  userSocket.addEventListener("message", (event) => {
+    if (socket !== userSocket || currentUserId !== userIdForSocket) return;
     const payload = JSON.parse(event.data);
     if (payload.type === "hello.ok") {
       setStatus("已连接", true);
@@ -322,6 +500,23 @@ function connect() {
       refreshButton.disabled = false;
       return;
     }
+    if (payload.type === "groups.updated") {
+      groups = payload.groups || [];
+      if (selectedGroupId && !groups.some((group) => group.id === selectedGroupId)) {
+        selectedGroupId = "";
+        activeGroup = null;
+        members = [];
+        messages = [];
+        renderMembers();
+        renderMessages();
+        renderBroadcastStatus();
+        titleEl.textContent = "选择一个群组";
+        subtitleEl.textContent = "你已不再是该群组成员";
+      }
+      renderGroups();
+      if (!selectedGroupId && groups[0]) void selectGroup(groups[0].id);
+      return;
+    }
     if (payload.type === "message") {
       if (payload.group?.id !== selectedGroupId || messages.some((message) => message.messageId === payload.messageId || message.id === payload.messageId)) return;
       messages.push(payload);
@@ -336,12 +531,15 @@ function connect() {
     }
     if (payload.type === "error") setStatus(`错误：${payload.message}`);
   });
-  socket.addEventListener("close", () => {
+  userSocket.addEventListener("close", () => {
+    if (socket !== userSocket || currentUserId !== userIdForSocket) return;
     setStatus("已断开");
     contentInput.disabled = true;
     sendButton.disabled = true;
   });
-  socket.addEventListener("error", () => setStatus("连接失败"));
+  userSocket.addEventListener("error", () => {
+    if (socket === userSocket && currentUserId === userIdForSocket) setStatus("连接失败");
+  });
 }
 
 connectButton.addEventListener("click", connect);
@@ -368,6 +566,33 @@ groupCreateForm.addEventListener("submit", async (event) => {
     button.disabled = !currentUserId;
   }
 });
+humanInviteForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const username = humanUsernameInput.value.trim();
+  if (!activeGroup || !username || activeGroup.ownerId !== currentUserId) return;
+  const button = humanInviteForm.querySelector("button");
+  button.disabled = true;
+  try {
+    const loginPayload = await api("/api/login", {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    });
+    const payload = await api(`/api/groups/${encodeURIComponent(activeGroup.id)}/members`, {
+      method: "POST",
+      body: JSON.stringify({ actorId: currentUserId, memberType: "human", memberId: loginPayload.user.id }),
+    });
+    members = payload.members || members;
+    humanUsernameInput.value = "";
+    renderMembers();
+    renderAgentChoices();
+    setManageFeedback(`已邀请 ${loginPayload.user.displayName}`);
+  } catch (error) {
+    setManageFeedback(`邀请成员失败：${error.message}`, true);
+  } finally {
+    renderAgentChoices();
+  }
+});
+
 agentInviteForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const agentId = agentSelect.value;
@@ -388,20 +613,7 @@ agentInviteForm.addEventListener("submit", async (event) => {
     renderAgentChoices();
   }
 });
-userSelect.addEventListener("change", () => {
-  currentUserId = userSelect.value;
-  groups = [];
-  members = [];
-  activeGroup = null;
-  selectedGroupId = "";
-  broadcastStatuses = new Map();
-  renderGroups();
-  renderBroadcastStatus();
-  renderMembers();
-  setManageFeedback("");
-  socket?.close();
-  connect();
-});
+logoutButton.addEventListener("click", logout);
 refreshButton.addEventListener("click", () => connect());
 composer.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -410,5 +622,12 @@ composer.addEventListener("submit", (event) => {
   socket.send(JSON.stringify({ type: "user.message", groupId: selectedGroupId, content }));
   contentInput.value = "";
 });
+loginForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const username = loginUsernameInput.value.trim();
+  if (username) void login(username);
+});
 window.addEventListener("beforeunload", () => socket?.close());
-void Promise.all([loadUsers(), loadAgents()]);
+resetWorkspace();
+setStatus("请先输入用户名");
+loginUsernameInput.focus();
