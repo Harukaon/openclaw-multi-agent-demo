@@ -736,6 +736,7 @@ export class PlatformServer {
       depth: message.depth,
       agentReplyCount: step.agentReplyCount,
       maxAgentReplies: step.maxAgentReplies,
+      consecutiveAgentTriggers: message.sender.type === "agent" ? Math.max(0, message.depth) : 0,
     };
     sendJson(socket, this.buildAgentEvent(member, group, message, {
       broadcast,
@@ -772,43 +773,11 @@ export class PlatformServer {
       joinedAt: message.createdAt,
     });
     this.setBroadcastAgentStatus(turn, message.sender.id, "replied");
-    // Keep turn control isolated by rootMessageId, but give the Agent the full
-    // group history so it can recognize prior replies across human turns.
-    const conversation = this.store.getMessages(group.id)
-      .filter((item) => item.seq <= message.seq);
     for (const member of this.store.getGroupMembers(group.id).filter((item) => item.memberType === "agent")) {
-      if (message.sender.id === member.memberId) {
-        this.store.markDeliveryResult(message.id, group.id, member.memberId, "skipped");
-        continue;
-      }
-      const directlyMentioned = message.mentions.some((mention) => mention.type === "agent" && mention.id === member.memberId);
-      if (directlyMentioned) this.queueBroadcastDelivery(turn, group, member, message);
-      else this.sendBroadcastObservation(turn, group, member, message, conversation);
+      this.queueBroadcastDelivery(turn, group, member, message);
     }
     this.publishBroadcastStatus(group, turn);
     this.maybeSettleBroadcast(turn);
-  }
-
-  private sendBroadcastObservation(
-    turn: BroadcastTurn,
-    group: Group,
-    member: GroupMember,
-    message: StoredMessage,
-    conversation: readonly StoredMessage[],
-  ): void {
-    const socket = this.agentSockets.get(member.memberId);
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    const broadcast: AgentBroadcastContext = {
-      turnId: turn.turnId,
-      rootMessageId: turn.rootMessageId,
-      depth: message.depth,
-      agentReplyCount: turn.agentReplyCount,
-      maxAgentReplies: turn.maxAgentReplies,
-    };
-    // Every Agent can observe the complete turn, but only a direct @ mention
-    // starts an OpenClaw turn. This prevents weak models from echoing forever.
-    sendJson(socket, this.buildAgentEvent(member, group, message, { broadcast, conversation, observation: true }));
-    this.store.markDelivered(message.id, group.id, member.memberId);
   }
 
   private sendMessageToAgent(agentId: string, message: StoredMessage): void {
@@ -825,7 +794,7 @@ export class PlatformServer {
     member: GroupMember,
     group: Group,
     message: StoredMessage,
-    options: { broadcast?: AgentBroadcastContext; conversation?: readonly StoredMessage[]; mentionState?: MentionState; observation?: boolean } = {},
+    options: { broadcast?: AgentBroadcastContext; conversation?: readonly StoredMessage[]; mentionState?: MentionState } = {},
   ): AgentMessageEvent {
     const mentionState = options.mentionState ?? mentionStateFor(message.sender.type, message.sender.id, member.memberId, message.mentions);
     return {
@@ -843,7 +812,6 @@ export class PlatformServer {
         mentionState,
         broadcast: options.broadcast,
         conversation: options.conversation,
-        observation: options.observation,
         groupAgents: this.store.getGroupMembers(group.id)
           .filter((item) => item.memberType === "agent")
           .map((item) => ({ id: item.memberId, displayName: item.displayName })),
@@ -859,7 +827,6 @@ export class PlatformServer {
         mentionState,
         selfMessage: mentionState === "SELF",
         broadcast: options.broadcast,
-        observation: options.observation,
       },
     };
   }

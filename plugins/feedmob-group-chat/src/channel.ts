@@ -63,8 +63,8 @@ type GroupMessageEvent = GroupChatClientMessage & {
       depth: number;
       agentReplyCount: number;
       maxAgentReplies: number;
+      consecutiveAgentTriggers: number;
     };
-    observation?: boolean;
   };
 };
 
@@ -131,10 +131,10 @@ async function handleInboundMessage(ctx: GatewayContext, client: GroupChatClient
   const mentionState = isSelfMessage ? "SELF" : (delivery?.mentionState || "NONE");
   const contentForAgent = event.contentForAgent?.trim() || event.content;
 
-  // Platform broadcasts live turns with metadata. An observation/replay must be
-  // ACKed without starting a new OpenClaw turn, even though it carries context.
+  // Platform broadcasts live turns with metadata. A replay/observation has no
+  // broadcast context and must be ACKed without starting an OpenClaw turn.
   const broadcast = delivery?.broadcast;
-  if (!broadcast || delivery?.observation) {
+  if (!broadcast) {
     client.send({ type: "ack", groupId: event.group.id, seq: event.seq, messageId: event.messageId });
     ctx.log?.info?.(`observed replay group=${event.group.id} seq=${event.seq}`);
     return;

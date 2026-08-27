@@ -69,6 +69,7 @@ export interface AgentBroadcastContext {
   depth: number;
   agentReplyCount: number;
   maxAgentReplies: number;
+  consecutiveAgentTriggers: number;
 }
 
 export type BroadcastAgentStatus = "waiting" | "replying" | "replied" | "no_reply" | "offline" | "timeout" | "limit";
@@ -98,7 +99,6 @@ export interface DeliveryContext {
   mentionState: MentionState;
   selfMessage: boolean;
   broadcast?: AgentBroadcastContext;
-  observation?: boolean;
 }
 
 export interface AgentMessageEvent {

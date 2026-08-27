@@ -70,14 +70,28 @@ test("Agent prompt injection preserves the message and explains each mention sta
   assert.match(direct, /直接 @ 了你/);
   assert.match(direct, /Please review this/);
 
+  const chained = buildAgentContentForAgent({
+    ...base,
+    mentionState: "DIRECT",
+    broadcast: {
+      turnId: "turn-1",
+      rootMessageId: "root-1",
+      depth: 3,
+      agentReplyCount: 3,
+      maxAgentReplies: 12,
+      consecutiveAgentTriggers: 3,
+    },
+  });
+  assert.match(chained, /当前对话已经被 Agent 连续主动触发 3 次/);
+  assert.match(chained, /人类消息会把这个计数重置为 0/);
+
   const other = buildAgentContentForAgent({ ...base, mentionState: "OTHER" });
   assert.match(other, /Mention State: OTHER/);
   assert.match(other, /指向其他群成员或 Agent/);
 
   const none = buildAgentContentForAgent({ ...base, mentionState: "NONE" });
   assert.match(none, /Mention State: NONE/);
-  assert.match(none, /本消息没有 @ 你/);
-  assert.match(none, /没有 @ 任何群成员/);
+  assert.match(none, /消息没有 @ 任何群成员/);
 
   const self = buildAgentContentForAgent({ ...base, mentionState: "SELF" });
   assert.match(self, /Mention State: SELF/);
@@ -354,7 +368,6 @@ test("Platform broadcasts live context with loop and group isolation guards", as
     const fromAForB = await agentB.waitFor((event) => event.type === "message" && event.content === "Agent A reply");
     assert.equal(agentA.events.some((event) => event.type === "message" && event.content === "Agent A reply"), false);
     assert.equal((fromAForB.sender as Record<string, unknown>).id, "agent-a");
-    assert.equal((fromAForB.deliveryContext as Record<string, unknown>).observation, true);
     assert.match(String(fromAForB.contentForAgent), /@agent-a Please analyze this/);
     assert.match(String(fromAForB.contentForAgent), /Agent A reply/);
 
@@ -370,7 +383,6 @@ test("Platform broadcasts live context with loop and group isolation guards", as
     await agentB.waitFor((event) => event.type === "message.accepted" && event.clientMessageId === "reply-b");
     const fromBForA = await agentA.waitFor((event) => event.type === "message" && event.content === "Agent B reply");
     assert.equal((fromBForA.sender as Record<string, unknown>).id, "agent-b");
-    assert.equal((fromBForA.deliveryContext as Record<string, unknown>).observation, true);
     assert.match(String(fromBForA.contentForAgent), /@agent-a Please analyze this/);
     assert.match(String(fromBForA.contentForAgent), /Agent A reply/);
     assert.match(String(fromBForA.contentForAgent), /Visible Agent replies so far: 2\/12/);
