@@ -1,7 +1,6 @@
 FROM node:22.23.2-bookworm-slim AS build
 WORKDIR /build
 COPY package.json package-lock.json tsconfig.json ./
-COPY types ./types
 COPY src ./src
 COPY index.ts ./index.ts
 RUN npm ci --ignore-scripts
