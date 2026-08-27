@@ -388,9 +388,9 @@ function renderMembers() {
     chip.type = "button";
     chip.className = "mention-chip";
     chip.textContent = `@${agent.displayName}`;
-    chip.title = `插入 @${agent.memberId}`;
+    chip.title = `插入 @${agent.displayName}`;
     chip.addEventListener("click", () => {
-      contentInput.value = `${contentInput.value}${contentInput.value ? " " : ""}@${agent.memberId} `;
+      contentInput.value = `${contentInput.value}${contentInput.value ? " " : ""}@${agent.displayName} `;
       contentInput.focus();
     });
     mentionBar.append(chip);
