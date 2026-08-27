@@ -1,0 +1,10 @@
+.DS_Store
+**/node_modules/
+**/dist/
+deploy/single-host/.env
+deploy/single-host/config/agent-*/openclaw.json
+deploy/single-host/state/
+deploy/single-host/platform-data/
+deploy/platform/.env
+deploy/platform/data/
+artifacts/plugin-load-test/

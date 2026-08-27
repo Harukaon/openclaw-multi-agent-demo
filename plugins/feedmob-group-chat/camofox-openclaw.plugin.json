@@ -1,0 +1,48 @@
+{
+  "id": "camofox-browser",
+  "name": "Camofox Browser",
+  "description": "Anti-detection browser automation for AI agents using Camoufox (Firefox-based)",
+  "version": "2.4.7",
+  "contracts": {
+    "tools": [
+      "camofox_create_tab",
+      "camofox_snapshot",
+      "camofox_console",
+      "camofox_errors",
+      "camofox_console_clear",
+      "camofox_trace_start",
+      "camofox_trace_stop",
+      "camofox_click",
+      "camofox_type",
+      "camofox_navigate",
+      "camofox_go_back",
+      "camofox_go_forward",
+      "camofox_refresh",
+      "camofox_scroll",
+      "camofox_screenshot",
+      "camofox_close_tab",
+      "camofox_list_tabs",
+      "camofox_import_cookies"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "Camoufox browser server URL"
+      },
+      "port": {
+        "type": "number",
+        "description": "Server port (used if url not set)",
+        "default": 9377
+      },
+      "autoStart": {
+        "type": "boolean",
+        "description": "Auto-start the camofox-browser server with the Gateway",
+        "default": true
+      }
+    },
+    "additionalProperties": false
+  }
+}

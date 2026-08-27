@@ -1,0 +1,37 @@
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "lan",
+    "auth": {
+      "mode": "local"
+    }
+  },
+  "channels": {
+    "feedmob-group-chat": {}
+  },
+  "plugins": {
+    "load": {
+      "paths": [
+        "/opt/camofox-plugin",
+        "/opt/feedmob-group-chat"
+      ]
+    },
+    "allow": [
+      "camofox-browser",
+      "feedmob-group-chat"
+    ],
+    "entries": {
+      "camofox-browser": {
+        "enabled": true,
+        "config": {
+          "port": 9377,
+          "autoStart": true
+        }
+      },
+      "feedmob-group-chat": {
+        "enabled": true,
+        "config": {}
+      }
+    }
+  }
+}

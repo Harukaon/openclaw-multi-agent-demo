@@ -1,0 +1,36 @@
+{
+  "name": "@feedmob/openclaw-group-chat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "openclaw": "2026.7.1-2",
+    "typescript": "^5.8.3"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.7.1-2"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"],
+    "compat": {
+      "pluginApi": ">=2026.7.1-2",
+      "minGatewayVersion": ">=2026.7.1-2"
+    },
+    "build": {
+      "openclawVersion": "2026.7.1-2"
+    }
+  }
+}
