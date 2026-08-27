@@ -70,6 +70,27 @@ export interface AgentPipelineContext {
   rootMessageId: string;
 }
 
+export type PipelineAgentStatus = "waiting" | "replying" | "replied" | "skipped" | "offline" | "timeout";
+
+export interface PipelineAgentStatusEntry {
+  id: string;
+  displayName: string;
+  status: PipelineAgentStatus;
+}
+
+export interface PipelineStatusEvent {
+  type: "pipeline.status";
+  group: Pick<Group, "id" | "name">;
+  turnId: string;
+  rootMessageId: string;
+  state: "queued" | "replying" | "completed";
+  step: number;
+  totalSteps: number;
+  currentAgent?: Pick<Agent, "id" | "displayName">;
+  agents: PipelineAgentStatusEntry[];
+  updatedAt: string;
+}
+
 export interface DeliveryContext {
   groupId: string;
   groupName: string;

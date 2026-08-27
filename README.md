@@ -21,6 +21,8 @@ Compose 已为 Platform 配置 `384m` 上限/`256m` 保留，为每只 OpenClaw+
 
 Platform 不修改 OpenClaw。一个群内的人类 turn 按 Agent 成员加入顺序串行投递：A 完成后，Platform 将用户原话和 A 的可见回复拼入 `contentForAgent`，再投递给 B。Agent 没有有效贡献时输出精确的 `NO_REPLY`（大小写不敏感、不得附加其他文字），插件将其静默；可见回复才会写入群历史并传给下一 Agent。
 
+Platform 同时向用户 WebSocket 推送 `pipeline.status`：状态栏显示当前由哪个 Agent 回复，以及每个 Agent 的 `等待中`、`回复中`、`已回复`、`已跳过`、`离线跳过` 或 `超时跳过` 状态；本轮所有成员处理完后显示 `已完成`。用户连接的 `hello.ok` 也会带上各群最新状态，刷新页面不会丢失当前状态。
+
 ## 关键约束
 
 - 不在 feedmob2/feedmob3 上构建 Docker 镜像或编译项目。

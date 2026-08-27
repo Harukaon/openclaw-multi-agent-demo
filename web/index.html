@@ -33,6 +33,10 @@
             <div><p class="eyebrow">实时协作空间</p><h1 id="group-title">选择一个群组</h1><p id="group-subtitle" class="muted">登录后开始群聊</p></div>
             <button id="connect" class="primary-button" type="button" disabled>连接</button>
           </header>
+          <section id="pipeline-status" class="pipeline-status idle" aria-live="polite" aria-label="Agent 回复状态">
+            <div class="pipeline-status-head"><span class="pipeline-status-dot"></span><strong id="pipeline-status-title">等待消息</strong><span id="pipeline-status-detail"></span></div>
+            <div id="pipeline-agents" class="pipeline-agents"></div>
+          </section>
           <div id="messages" class="messages" aria-live="polite"></div>
           <form id="composer" class="composer">
             <div id="mention-bar" class="mention-bar"></div>
@@ -47,7 +51,7 @@
             <button type="submit" disabled>邀请 Agent</button>
           </form>
           <p id="manage-feedback" class="manage-feedback" role="status"></p>
-          <div class="panel-note">消息会广播给当前群内所有 Agent；@ 只用于提示回复优先级。</div>
+          <div class="panel-note">Human 消息按群成员顺序串行交给 Agent；状态栏会显示当前轮到谁回复。</div>
         </aside>
       </section>
     </main>

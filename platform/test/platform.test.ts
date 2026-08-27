@@ -163,6 +163,52 @@ function connectAgent(port: number, agentId: string, token: string): Promise<Soc
   });
 }
 
+function connectUser(port: number, userId: string): Promise<SocketHarness> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/user`);
+    const events: Array<Record<string, unknown>> = [];
+    const waiters: Array<{
+      predicate: (event: Record<string, unknown>) => boolean;
+      resolve: (event: Record<string, unknown>) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }> = [];
+    const harness: SocketHarness = {
+      socket,
+      events,
+      waitFor: (predicate, timeoutMs = 5000) => {
+        const existing = events.find(predicate);
+        if (existing) return Promise.resolve(existing);
+        return new Promise((waitResolve, waitReject) => {
+          const waiter = {
+            predicate,
+            resolve: (event: Record<string, unknown>) => {
+              clearTimeout(waiter.timer);
+              waitResolve(event);
+            },
+            timer: setTimeout(() => {
+              waiters.splice(waiters.indexOf(waiter), 1);
+              waitReject(new Error("timed out waiting for test websocket event"));
+            }, timeoutMs),
+          };
+          waiters.push(waiter);
+        });
+      },
+    };
+    socket.on("open", () => socket.send(JSON.stringify({ type: "hello", userId })));
+    socket.on("message", (raw) => {
+      const event = JSON.parse(raw.toString()) as Record<string, unknown>;
+      events.push(event);
+      for (const waiter of [...waiters]) {
+        if (!waiter.predicate(event)) continue;
+        waiters.splice(waiters.indexOf(waiter), 1);
+        waiter.resolve(event);
+      }
+      if (event.type === "hello.ok") resolve(harness);
+    });
+    socket.once("error", reject);
+  });
+}
+
 async function postJson(url: string, body: unknown): Promise<Record<string, unknown>> {
   const response = await fetch(url, {
     method: "POST",
@@ -187,6 +233,7 @@ test("Platform passes cumulative context to Agents in group order", async () => 
   const server = new PlatformServer(store);
   let agentA: SocketHarness | undefined;
   let agentB: SocketHarness | undefined;
+  let user: SocketHarness | undefined;
   try {
     const ownerA = store.createUser({ id: "owner-a", username: "owner-a", displayName: "Owner A" });
     const ownerB = store.createUser({ id: "owner-b", username: "owner-b", displayName: "Owner B" });
@@ -204,6 +251,7 @@ test("Platform passes cumulative context to Agents in group order", async () => 
     const port = address.port;
     agentA = await connectAgent(port, createdA.agent.id, createdA.token);
     agentB = await connectAgent(port, createdB.agent.id, createdB.token);
+    user = await connectUser(port, ownerA.id);
 
     await postJson(`http://127.0.0.1:${port}/api/groups/group-a/messages`, {
       senderType: "human",
@@ -211,6 +259,9 @@ test("Platform passes cumulative context to Agents in group order", async () => 
       content: "@agent-a Please analyze this",
     });
     const firstForA = await agentA.waitFor((event) => event.type === "message" && event.content === "@agent-a Please analyze this");
+    const replyingA = await user.waitFor((event) => event.type === "pipeline.status" && (event.currentAgent as Record<string, unknown>)?.id === "agent-a");
+    assert.equal(replyingA.state, "replying");
+    assert.equal((replyingA.agents as Array<Record<string, unknown>>)[0]?.status, "replying");
     assert.equal((firstForA.deliveryContext as Record<string, unknown>).pipeline && ((firstForA.deliveryContext as Record<string, unknown>).pipeline as Record<string, unknown>).step, 1);
     assert.match(String(firstForA.contentForAgent), /Mention State: DIRECT/);
     assert.equal(agentB.events.some((event) => event.type === "message" && event.content === "@agent-a Please analyze this"), false);
@@ -230,6 +281,10 @@ test("Platform passes cumulative context to Agents in group order", async () => 
     agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: 1 }));
 
     const secondForB = await agentB.waitFor((event) => event.type === "message" && event.content === "Agent A reply");
+    const replyingB = await user.waitFor((event) => event.type === "pipeline.status" && (event.currentAgent as Record<string, unknown>)?.id === "agent-b");
+    assert.equal(replyingB.state, "replying");
+    assert.equal((replyingB.agents as Array<Record<string, unknown>>)[0]?.status, "replied");
+    assert.equal((replyingB.agents as Array<Record<string, unknown>>)[1]?.status, "replying");
     const secondPipeline = (secondForB.deliveryContext as Record<string, unknown>).pipeline as Record<string, unknown>;
     assert.equal(secondPipeline.step, 2);
     assert.equal(secondPipeline.totalSteps, 2);
@@ -238,6 +293,9 @@ test("Platform passes cumulative context to Agents in group order", async () => 
     assert.match(String(secondForB.contentForAgent), /exactly NO_REPLY/);
     assert.equal(secondForB.sender && (secondForB.sender as Record<string, unknown>).id, "agent-a");
     agentB.socket.send(JSON.stringify({ type: "ack", groupId: "group-a", seq: 2 }));
+    const completed = await user.waitFor((event) => event.type === "pipeline.status" && event.state === "completed" && event.turnId === replyingB.turnId);
+    assert.equal((completed.agents as Array<Record<string, unknown>>)[0]?.status, "replied");
+    assert.equal((completed.agents as Array<Record<string, unknown>>)[1]?.status, "skipped");
 
     await postJson(`http://127.0.0.1:${port}/api/groups/group-a/messages`, {
       senderType: "human",
@@ -261,6 +319,7 @@ test("Platform passes cumulative context to Agents in group order", async () => 
     agentA.socket.send(JSON.stringify({ type: "ack", groupId: "group-b", seq: 1 }));
     assert.equal(agentB.events.some((event) => event.type === "message" && event.content === "Beta-only message"), false);
   } finally {
+    if (user) await closeSocket(user.socket);
     if (agentA) await closeSocket(agentA.socket);
     if (agentB) await closeSocket(agentB.socket);
     await server.stop().catch(() => undefined);

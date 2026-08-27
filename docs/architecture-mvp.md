@@ -56,7 +56,23 @@ Platform → Agent：
 - `error { code, message }`
 - `pong`
 
+用户 → Platform：
+
+- `hello { userId }`
+- `user.message { groupId, content, parentMessageId?, rootMessageId? }`
+- `ping`
+
+Platform → 用户：
+
+- `hello.ok { groups, pipelineStatuses }`
+- `message { group, seq, sender, content, mentions, parentMessageId?, rootMessageId?, depth, createdAt }`
+- `pipeline.status { group, turnId, rootMessageId, state, step, totalSteps, currentAgent?, agents, updatedAt }`
+- `error { code, message }`
+- `pong`
+
 `deliveryContext` 至少包含：`groupId`、`groupName`、`mentionState`、`selfMessage`。管线投递还包含 `pipeline { turnId, step, totalSteps, rootMessageId }`。Mention 状态限定在当前 Group：`SELF`、`DIRECT`、`OTHER`、`NONE`。`contentForAgent` 由 Platform 针对每个 Agent 注入当前群组、发送者、Mention 状态和累计对话；没有有效贡献时，提示 Agent 输出精确 `NO_REPLY`，插件将其静默，不写回群消息。`content` 始终保留当前原始消息。
+
+`pipeline.status.state` 为 `queued`、`replying` 或 `completed`；`currentAgent` 表示当前轮到谁，`agents[].status` 为 `waiting`、`replying`、`replied`、`skipped`、`offline` 或 `timeout`。状态按 Group 广播给 Human 成员；`hello.ok.pipelineStatuses` 用于页面重连后恢复各群最新状态。
 
 ## Channel Plugin MVP
 

@@ -15,6 +15,8 @@ import type {
   GroupMember,
   MentionState,
   MemberType,
+  PipelineAgentStatus,
+  PipelineStatusEvent,
   Sender,
   StoredMessage,
   UserHello,
@@ -41,12 +43,14 @@ type PipelineStep = PipelineTurn & {
   totalSteps: number;
 };
 
+type PipelineAckResult = "acked" | "timeout" | "offline";
+
 type PipelineAckWaiter = {
   agentId: string;
   groupId: string;
   messageId: string;
   seq: number;
-  resolve: () => void;
+  resolve: (result: PipelineAckResult) => void;
   timer: ReturnType<typeof setTimeout>;
 };
 
@@ -106,6 +110,7 @@ export class PlatformServer {
   private readonly pipelineQueues = new Map<string, Promise<void>>();
   private readonly activePipelineSteps = new Map<string, PipelineStep>();
   private readonly pipelineAckWaiters = new Map<string, PipelineAckWaiter>();
+  private readonly pipelineStatuses = new Map<string, PipelineStatusEvent>();
 
   constructor(store = new Store(process.env.DATABASE_FILE || ":memory:")) {
     this.store = store;
@@ -133,7 +138,7 @@ export class PlatformServer {
   async stop(): Promise<void> {
     for (const waiter of this.pipelineAckWaiters.values()) {
       clearTimeout(waiter.timer);
-      waiter.resolve();
+      waiter.resolve("offline");
     }
     this.pipelineAckWaiters.clear();
     const sockets = new Set<WebSocket>([...this.agentWss.clients, ...this.userWss.clients]);
@@ -473,7 +478,15 @@ export class PlatformServer {
       const sockets = this.userSockets.get(hello.userId) || new Set<WebSocket>();
       sockets.add(socket);
       this.userSockets.set(hello.userId, sockets);
-      sendJson(socket, { type: "hello.ok", channel: CHANNEL_ID, groups: this.store.listGroupsForUser(hello.userId) });
+      const groups = this.store.listGroupsForUser(hello.userId);
+      sendJson(socket, {
+        type: "hello.ok",
+        channel: CHANNEL_ID,
+        groups,
+        pipelineStatuses: groups
+          .map((group) => this.pipelineStatuses.get(group.id))
+          .filter((status): status is PipelineStatusEvent => Boolean(status)),
+      });
       return;
     }
     const userId = this.findUserForSocket(socket);
@@ -564,11 +577,49 @@ export class PlatformServer {
       groupId: group.id,
       rootMessageId: rootMessage.rootMessageId || rootMessage.id,
     };
+    const agentStatuses = agents.map((member) => ({
+      id: member.memberId,
+      displayName: member.displayName,
+      status: "waiting" as PipelineAgentStatus,
+    }));
+
+    this.publishPipelineStatus(group, {
+      type: "pipeline.status",
+      group: { id: group.id, name: group.name },
+      turnId: turn.turnId,
+      rootMessageId: turn.rootMessageId,
+      state: "queued",
+      step: 0,
+      totalSteps: agents.length,
+      agents: agentStatuses,
+      updatedAt: new Date().toISOString(),
+    });
 
     for (const [index, member] of agents.entries()) {
+      const agentStatus = agentStatuses[index];
+      if (!agentStatus) continue;
       const currentGroup = this.store.getGroup(group.id);
-      if (!currentGroup || currentGroup.status === "paused") return;
-      if (!this.store.isMember(group.id, "agent", member.memberId)) continue;
+      if (!currentGroup) return;
+      if (currentGroup.status === "paused") {
+        for (const agent of agentStatuses) if (agent.status === "waiting" || agent.status === "replying") agent.status = "skipped";
+        this.publishPipelineStatus(group, {
+          type: "pipeline.status",
+          group: { id: group.id, name: group.name },
+          turnId: turn.turnId,
+          rootMessageId: turn.rootMessageId,
+          state: "completed",
+          step: agents.length,
+          totalSteps: agents.length,
+          agents: agentStatuses,
+          updatedAt: new Date().toISOString(),
+        });
+        return;
+      }
+      if (!this.store.isMember(group.id, "agent", member.memberId)) {
+        agentStatus.status = "skipped";
+        this.publishPipelineStatus(group, this.pipelineStatusFor(turn, agents.length, agentStatuses, index + 1));
+        continue;
+      }
 
       const conversation = this.store
         .getMessages(group.id)
@@ -582,17 +633,44 @@ export class PlatformServer {
         totalSteps: agents.length,
       };
       const socket = this.agentSockets.get(member.memberId);
+      agentStatus.status = "replying";
+      this.publishPipelineStatus(group, this.pipelineStatusFor(turn, agents.length, agentStatuses, index + 1, member));
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         this.store.markDeliveryResult(latest.id, group.id, member.memberId, "queued");
+        agentStatus.status = "offline";
+        this.publishPipelineStatus(group, this.pipelineStatusFor(turn, agents.length, agentStatuses, index + 1));
         continue;
       }
 
       this.activePipelineSteps.set(group.id, step);
-      const acked = this.waitForPipelineAck(step);
+      const ackResultPromise = this.waitForPipelineAck(step);
       this.sendPipelineStep(socket, member, currentGroup, latest, step, conversation);
-      await acked;
+      const ackResult = await ackResultPromise;
+      const currentMessages = this.store
+        .getMessages(group.id)
+        .filter((message) => message.rootMessageId === turn.rootMessageId);
+      const hasVisibleReply = currentMessages.some(
+        (message) => message.seq > latest.seq && message.sender.type === "agent" && message.sender.id === member.memberId,
+      );
       if (this.activePipelineSteps.get(group.id) === step) this.activePipelineSteps.delete(group.id);
+
+      if (ackResult === "timeout") agentStatus.status = "timeout";
+      else if (ackResult === "offline") agentStatus.status = "offline";
+      else agentStatus.status = hasVisibleReply ? "replied" : "skipped";
+      this.publishPipelineStatus(group, this.pipelineStatusFor(turn, agents.length, agentStatuses, index + 1));
     }
+
+    this.publishPipelineStatus(group, {
+      type: "pipeline.status",
+      group: { id: group.id, name: group.name },
+      turnId: turn.turnId,
+      rootMessageId: turn.rootMessageId,
+      state: "completed",
+      step: agents.length,
+      totalSteps: agents.length,
+      agents: agentStatuses,
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   private sendPipelineStep(
@@ -672,12 +750,46 @@ export class PlatformServer {
     };
   }
 
-  private waitForPipelineAck(step: PipelineStep): Promise<void> {
+  private pipelineStatusFor(
+    turn: PipelineTurn,
+    totalSteps: number,
+    agents: PipelineStatusEvent["agents"],
+    step: number,
+    currentMember?: GroupMember,
+  ): PipelineStatusEvent {
+    const currentAgent = currentMember
+      ? { id: currentMember.memberId, displayName: currentMember.displayName }
+      : agents.find((agent) => agent.status === "replying");
+    return {
+      type: "pipeline.status",
+      group: { id: turn.groupId, name: this.store.getGroup(turn.groupId)?.name || turn.groupId },
+      turnId: turn.turnId,
+      rootMessageId: turn.rootMessageId,
+      state: currentAgent ? "replying" : "queued",
+      step,
+      totalSteps,
+      currentAgent: currentAgent ? { id: currentAgent.id, displayName: currentAgent.displayName } : undefined,
+      agents,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  private publishPipelineStatus(group: Group, status: PipelineStatusEvent): void {
+    this.pipelineStatuses.set(group.id, status);
+    const humanMembers = this.store.getGroupMembers(group.id).filter((member) => member.memberType === "human");
+    for (const member of humanMembers) {
+      const sockets = this.userSockets.get(member.memberId);
+      if (!sockets) continue;
+      for (const socket of sockets) sendJson(socket, status);
+    }
+  }
+
+  private waitForPipelineAck(step: PipelineStep): Promise<PipelineAckResult> {
     const key = this.pipelineAckKey(step.agentId, step.groupId, step.messageId);
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pipelineAckWaiters.delete(key);
-        resolve();
+        resolve("timeout");
       }, PIPELINE_ACK_TIMEOUT_MS);
       this.pipelineAckWaiters.set(key, {
         agentId: step.agentId,
@@ -696,7 +808,7 @@ export class PlatformServer {
       if (messageId ? waiter.messageId !== messageId : waiter.seq > seq) continue;
       clearTimeout(waiter.timer);
       this.pipelineAckWaiters.delete(key);
-      waiter.resolve();
+      waiter.resolve("acked");
     }
   }
 
@@ -705,7 +817,7 @@ export class PlatformServer {
       if (waiter.agentId !== agentId) continue;
       clearTimeout(waiter.timer);
       this.pipelineAckWaiters.delete(key);
-      waiter.resolve();
+      waiter.resolve("offline");
     }
   }
 
